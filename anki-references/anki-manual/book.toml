@@ -1,0 +1,43 @@
+[book]
+authors = ["Ankitects Pty Ltd and contributors"]
+description = "Anki's user manual. Anki is a flashcard program that makes learning easier."
+language = "en"
+src = "src"
+title = "Anki Manual"
+
+[build]
+create-missing = true
+
+[preprocessor.toc]
+command = "mdbook-toc"
+renderer = ["html"]
+
+[preprocessor.admonish]
+command = "mdbook-admonish"
+assets_version = "3.0.3" # do not edit: managed by `mdbook-admonish install`
+
+[output.html]
+git-repository-url = "https://github.com/ankitects/anki-manual/"
+cname = "docs.ankiweb.net"
+additional-css = ["css/misc.css", "css/mdbook-admonish.css"]
+smart-punctuation = true
+mathjax-support = true
+
+[output.linkcheck]
+optional = true
+warning-policy = "warn"
+follow-web-links = true
+exclude = [
+  'microsoft.com',
+  'twitter.com',
+  'stackexchange.com',
+  'stackoverflow.com',
+  'https://github.com/open-spaced-repetition/fsrs4anki#add-on-compatibility',
+  'support.google.com',
+  'wikiwiki.jp',
+  'web.archive.org',
+]
+
+[output.html.fold]
+enable = true
+level = 0

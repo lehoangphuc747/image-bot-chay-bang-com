@@ -1,0 +1,5 @@
+# Importing
+
+Anki can import text files, packaged Anki decks created by the export
+feature and Mnemosyne 2.0 .db files. To import a
+file, click the File menu and then "Import".
