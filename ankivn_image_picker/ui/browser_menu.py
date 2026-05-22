@@ -284,9 +284,25 @@ def _on_batch_action(browser: Any) -> None:
                         prefetch_pool.submit(_prefetch_query, q)
                     )
 
-        # --- Walk notes sequentially ---
-        for seq_idx, (index, nid, query) in enumerate(note_queries):
-            # Kick off prefetch for upcoming notes (look ahead N)
+        # --- Walk notes via a single reused dialog ---
+        # Instead of opening N modal dialogs in a row (which makes the
+        # screen flicker for 1-2s between notes while the next one
+        # spins up), we open ONE dialog and call ``swap_to_query`` on
+        # it for each note. The dialog drives the queue itself via
+        # ``start_batch`` + a next-note callback below.
+        from .picker_dialog import PickerDialog
+
+        # Builds the dict the dialog expects each time it asks for the
+        # next note. Returns None when the queue is exhausted so the
+        # dialog knows to accept().
+        cursor = {"i": 0}
+
+        def _build_job_for(seq_idx: int) -> Optional[dict]:
+            if seq_idx >= len(note_queries):
+                return None
+            index, nid, q = note_queries[seq_idx]
+
+            # Look-ahead prefetch for upcoming notes
             if prefetch_ahead > 0:
                 for ahead in range(1, prefetch_ahead + 1):
                     future_idx = seq_idx + ahead
@@ -300,36 +316,97 @@ def _on_batch_action(browser: Any) -> None:
             except Exception as exc:
                 _log.exception("Failed to load note %s: %s", nid, exc)
                 errors.append(f"note {nid}: {exc}")
-                continue
+                return None
 
-            outcome = _run_picker_for_note(
-                browser=browser,
-                note=note,
-                deps=deps,
-                position=(index, len(nids)),
-                prefetch_cache=prefetch_cache,
-                prefetch_errors=prefetch_errors,
-                prefetch_translations=prefetch_translations,
-                source_field=batch_source_field,
-                target_field=batch_target_field,
+            shim = _BatchEditorShim(browser=browser, note=note)
+            # Stash a skip-tagger on the shim so the dialog can call
+            # it without us having to plumb mw/browser into the dialog.
+            def _skip_tag_note(_nid: int = nid) -> None:
+                try:
+                    n = mw.col.get_note(_nid)
+                    n.add_tag("AnkiVN_Image_Picker_Skipped")
+                    mw.col.update_note(n)
+                except Exception as exc:
+                    _log.warning(
+                        "Failed to add skip tag to note %s: %s", _nid, exc
+                    )
+
+            shim._skip_tag_note = _skip_tag_note  # type: ignore[attr-defined]
+
+            prefetched_results = (
+                prefetch_cache.pop(q) if q in prefetch_cache else None
+            )
+            prefetched_errs = (
+                prefetch_errors.pop(q) if q in prefetch_errors else None
+            )
+            prefetched_translation = (
+                prefetch_translations.pop(q)
+                if q in prefetch_translations else None
             )
 
-            if outcome == "chosen":
-                chosen += 1
-            elif outcome == "skipped":
-                skipped += 1
-                # Tag the note so user can filter skipped notes later.
-                # Use underscores instead of spaces because Anki splits
-                # tags on whitespace.
-                try:
-                    note.add_tag("AnkiVN_Image_Picker_Skipped")
-                    mw.col.update_note(note)
-                except Exception as exc:
-                    _log.warning("Failed to add skip tag to note %s: %s", nid, exc)
-            elif outcome == "abort":
-                break
-            else:
-                errors.append(f"note {nid}")
+            return {
+                "editor": shim,
+                "query": q,
+                "source_field": batch_source_field,
+                "target_field": batch_target_field,
+                "position": (index, len(nids)),
+                "prefetched_results": prefetched_results,
+                "prefetched_errors": prefetched_errs,
+                "prefetched_translation": prefetched_translation,
+            }
+
+        def _next_job() -> Optional[dict]:
+            cursor["i"] += 1
+            return _build_job_for(cursor["i"])
+
+        first_job = _build_job_for(0)
+        if first_job is None:
+            tooltip("No notes with valid source fields found.", parent=browser)
+            prefetch_pool.shutdown(wait=False)
+            return
+
+        # Construct the dialog with the first note's data, then enter
+        # batch mode and exec(). The dialog stays open until the queue
+        # is drained or the user closes it.
+        from dataclasses import replace as _replace
+        first_config = _replace(
+            config,
+            source_field=first_job["source_field"],
+            target_field=first_job["target_field"],
+        )
+
+        dialog = PickerDialog(
+            editor=first_job["editor"],
+            config=first_config,
+            query=first_job["query"],
+            providers=deps.providers,
+            http=deps.http,
+            cache=deps.cache,
+            parent=browser,
+            prefetched_results=first_job["prefetched_results"],
+            prefetched_errors=first_job["prefetched_errors"],
+            prefetched_translation=first_job["prefetched_translation"],
+        )
+        try:
+            pos = first_job["position"]
+            dialog.setWindowTitle(
+                f"Image Picker [{pos[0]}/{pos[1]}] — {first_job['query']}"
+            )
+        except Exception:
+            pass
+
+        dialog.start_batch(_next_job)
+
+        try:
+            dialog.exec()
+        except Exception as exc:
+            _log.exception("Picker dialog raised: %s", exc)
+
+        # Pull aggregated outcomes off the dialog
+        outcomes = dialog.batch_outcomes or {}
+        chosen = outcomes.get("chosen", 0)
+        skipped = outcomes.get("skipped", 0)
+        errors.extend(outcomes.get("errors", []))
 
         # Cleanup prefetch pool
         prefetch_pool.shutdown(wait=False)

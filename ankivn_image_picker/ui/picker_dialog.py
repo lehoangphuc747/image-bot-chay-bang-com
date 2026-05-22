@@ -349,6 +349,33 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         self._provider_counts: dict[str, int] = {}  # provider_id -> result count
         self._results_received = False
 
+        # --- Batch mode state ---
+        # When operating as a single reused dialog across many notes,
+        # ``_batch_mode`` is True and the helpers below coordinate
+        # advancing through the queue without closing the dialog.
+        self._batch_mode: bool = False
+        # Provider of upcoming notes; set by ``start_batch``.
+        # Each call returns ``(note, query, target_field, position,
+        # prefetched_results, prefetched_errors, prefetched_translation)``
+        # or ``None`` when the batch is exhausted.
+        self._batch_next_provider: Optional[Any] = None
+        # Outcomes per nid for the caller to summarise after exec().
+        # Keys: "chosen", "skipped", "errors" (list of strings).
+        self._batch_outcomes: dict[str, Any] = {
+            "chosen": 0,
+            "skipped": 0,
+            "errors": [],
+        }
+        # Background pool used in batch mode for fire-and-forget
+        # full-image downloads. Lazily created.
+        self._batch_download_pool: Optional[Any] = None
+        # Track in-flight downloads so we can wait/cancel before close.
+        self._batch_download_futures: list = []
+        # url -> dict capturing the editor/note/result/etc. at click
+        # time. Lets _on_download_complete write to the right note
+        # even after the dialog has swapped to a different one.
+        self._batch_jobs: dict[str, dict[str, Any]] = {}
+
         # Round-robin buffers: per-provider queues for interleaved display.
         # Two-stage pipeline:
         #  1) _pending_results: result metadata received but thumbnail
@@ -1124,62 +1151,113 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         self._grid_model.on_download_progress(url, fraction)
         self._update_grid_display()
 
-    def _on_download_complete(
-        self, url: str, image_bytes: bytes, extension: str
-    ) -> None:
-        """Save image to media and insert into target field (Req 7.3).
+    def _compute_include_attribution(self, result: "ImageResult") -> bool:
+        """Decide whether attribution should be embedded for ``result``."""
+        include_attr = True
+        if self._attribution_checkbox is not None:
+            try:
+                include_attr = self._attribution_checkbox.isChecked()
+            except Exception:
+                include_attr = True
+        # Unsplash mandates attribution per their API guidelines
+        if result is not None and result.provider_id == "unsplash":
+            include_attr = True
+        return include_attr
 
-        On success, closes the dialog via accept().
+    def _do_save_and_insert(
+        self,
+        *,
+        editor: Any,
+        target_field: str,
+        query: str,
+        result: Optional["ImageResult"],
+        include_attr: bool,
+        image_bytes: bytes,
+        extension: str,
+    ) -> str:
+        """Save image bytes to media and insert into the editor's note.
+
+        Returns the actual filename written to the media folder. Raises
+        on failure (caller decides how to surface the error). The
+        method is intentionally context-free: it never reads
+        ``self._editor`` / ``self._config`` so it can run for any
+        captured batch job, even after the dialog has swapped to a
+        different note.
         """
         from .. import editor_bridge
         from ..attribution import build_attribution_html
 
         try:
-            # Derive a unique filename (Req 8.2, 8.3)
+            mw_ref = editor_bridge.mw
+            taken_fn = mw_ref.col.media.have
+        except Exception:
+            taken_fn = lambda name: False  # noqa: E731
+
+        filename = derive_filename(query, extension, taken=taken_fn)
+        used_filename = editor_bridge.save_to_media(filename, image_bytes)
+
+        attribution_html: Optional[str] = None
+        if include_attr and result is not None:
+            attribution_html = build_attribution_html(result)
+
+        editor_bridge.insert_image(
+            editor,
+            target_field,
+            used_filename,
+            attribution_html=attribution_html,
+        )
+        return used_filename
+
+    def _on_download_complete(
+        self, url: str, image_bytes: bytes, extension: str
+    ) -> None:
+        """Save image to media and insert into target field (Req 7.3).
+
+        In single-note mode this closes the dialog on success. In batch
+        mode the download is fire-and-forget: the job context was
+        captured at click-time so the dialog can have already swapped
+        to a different note by the time this runs.
+        """
+        # Batch path: look up captured context for this URL
+        if self._batch_mode and url in self._batch_jobs:
+            job = self._batch_jobs.pop(url, None)
+            if job is None:
+                return
             try:
-                mw_ref = editor_bridge.mw
-                taken_fn = mw_ref.col.media.have
-            except Exception:
-                # Fallback for environments where mw is not fully wired
-                taken_fn = lambda name: False  # noqa: E731
+                self._do_save_and_insert(
+                    editor=job["editor"],
+                    target_field=job["target_field"],
+                    query=job["query"],
+                    result=job["result"],
+                    include_attr=job["include_attr"],
+                    image_bytes=image_bytes,
+                    extension=extension,
+                )
+            except FieldNotFoundError as exc:
+                _log.error("Batch insert: target field missing: %s", exc)
+                self._batch_outcomes.setdefault("errors", []).append(
+                    f"target field missing: {exc}"
+                )
+            except Exception as exc:
+                _log.exception("Batch save/insert failed: %s", exc)
+                self._batch_outcomes.setdefault("errors", []).append(str(exc))
+            return
 
-            filename = derive_filename(
-                self._query, extension, taken=taken_fn
+        # Single-note path: legacy behaviour — close dialog on success.
+        try:
+            self._do_save_and_insert(
+                editor=self._editor,
+                target_field=self._config.target_field,
+                query=self._query,
+                result=self._selected_result,
+                include_attr=self._compute_include_attribution(
+                    self._selected_result
+                ) if self._selected_result is not None else True,
+                image_bytes=image_bytes,
+                extension=extension,
             )
-
-            # Save to media (Req 8.1, 8.4)
-            used_filename = editor_bridge.save_to_media(filename, image_bytes)
-
-            # Build attribution HTML (required for Unsplash compliance)
-            attribution_html: Optional[str] = None
-            if self._selected_result is not None:
-                # Check if user wants to include attribution
-                include_attr = True
-                if self._attribution_checkbox is not None:
-                    try:
-                        include_attr = self._attribution_checkbox.isChecked()
-                    except Exception:
-                        include_attr = True
-                # Always include for Unsplash (required by their guidelines)
-                if self._selected_result.provider_id == "unsplash":
-                    include_attr = True
-                if include_attr:
-                    attribution_html = build_attribution_html(self._selected_result)
-
-            # Insert into target field (Req 9.1, 9.2, 9.3, 9.5)
-            editor_bridge.insert_image(
-                self._editor,
-                self._config.target_field,
-                used_filename,
-                attribution_html=attribution_html,
-            )
-
-            # Remember size/maximized for next dialog instance
             self._remember_state()
-
-            # Close the dialog on success (Req 7.3)
             self.accept()
-
         except FieldNotFoundError as exc:
             _log.error("Target field not found: %s", exc)
             tooltip(
@@ -1192,6 +1270,19 @@ class PickerDialog(QDialog):  # type: ignore[misc]
 
     def _on_download_failed(self, url: str, message: str) -> None:
         """Show error and keep dialog open for another selection (Req 7.4)."""
+        # Batch path: log per-job failure, don't unlock selection (no
+        # selection lock in batch mode).
+        if self._batch_mode and url in self._batch_jobs:
+            job = self._batch_jobs.pop(url, None)
+            note_q = job["query"] if job else "?"
+            _log.warning(
+                "Background download failed for note %r: %s", note_q, message
+            )
+            self._batch_outcomes.setdefault("errors", []).append(
+                f"{note_q}: download failed ({message})"
+            )
+            return
+
         self._selection_locked = False
         tooltip(f"Download failed: {message}")
         _log.warning("Download failed for %s: %s", url, message)
@@ -1277,26 +1368,69 @@ class PickerDialog(QDialog):  # type: ignore[misc]
     def on_image_clicked(self, result: "ImageResult") -> None:
         """Handle user clicking an image in the grid.
 
-        Disables further selection, shows progress on the chosen cell,
-        and kicks off the full-image download (Req 7.1, 7.2).
+        In single-note mode: lock the dialog and download synchronously
+        (the download blocks the UI until save+insert completes — see
+        ``_on_download_complete`` / ``_on_download_failed``).
+
+        In batch mode: capture the current note context, kick off the
+        download fire-and-forget on the shared background pool, and
+        immediately advance to the next note. Save+insert happens on
+        the main thread when the bus emits ``download_complete``,
+        using the captured context.
         """
         if self._selection_locked:
             return
 
-        self._selection_locked = True
-        self._selected_result = result
-
-        # Mark the cell as downloading
+        # Mark the cell as downloading so the user can see something
+        # is happening before we swap (batch mode) or while we wait
+        # (single-note mode).
         for cell in self._grid_model.rows:
             if cell.result is result:
                 cell.state = "downloading"
                 cell.progress = 0.0
                 break
-
         self._update_grid_display()
 
-        # Kick off full-image download
         from ..orchestrator import FullImageDownloader
+
+        if self._batch_mode:
+            # Capture per-job context now — by the time the download
+            # finishes, the dialog will have swapped to a different
+            # note (so self._editor / self._query are stale).
+            self._batch_jobs[result.full_url] = {
+                "editor": self._editor,
+                "target_field": self._config.target_field,
+                "query": self._query,
+                "result": result,
+                "include_attr": self._compute_include_attribution(result),
+            }
+            # Track this note as "chosen" optimistically; the error
+            # handler will move it to the errors bucket if save fails.
+            self._batch_outcomes["chosen"] = (
+                self._batch_outcomes.get("chosen", 0) + 1
+            )
+
+            downloader = FullImageDownloader(
+                http=self._http,
+                bus=self._bus,
+                # IMPORTANT: never share the per-search cancel token
+                # with the fire-and-forget download. Swapping notes
+                # cancels search work; we don't want that to abort
+                # the user's chosen download.
+                cancel=CancellationToken(),
+            )
+            pool = self._get_batch_download_pool()
+            future = pool.submit(downloader.fetch, result)
+            self._batch_download_futures.append(future)
+
+            # Advance to the next note immediately so the user can
+            # keep going without waiting for the download.
+            self._advance_batch()
+            return
+
+        # Single-note mode: classic blocking flow.
+        self._selection_locked = True
+        self._selected_result = result
 
         downloader = FullImageDownloader(
             http=self._http,
@@ -1387,6 +1521,272 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         except Exception:
             pass
 
+    # ------------------------------------------------------------------
+    # Batch mode: reuse a single dialog for many notes
+    # ------------------------------------------------------------------
+
+    def start_batch(self, next_provider: Any) -> None:
+        """Enter batch mode driven by ``next_provider``.
+
+        ``next_provider`` is a zero-arg callable returning either a
+        dict with the keys ``note``, ``editor``, ``query``,
+        ``source_field``, ``target_field``, ``position``,
+        ``prefetched_results``, ``prefetched_errors``,
+        ``prefetched_translation`` — or ``None`` to signal the queue
+        is empty.
+
+        The dialog enables fire-and-forget full-image downloads:
+        double-clicking an image kicks off the download on a
+        background pool and immediately advances to the next note,
+        instead of blocking the UI until the file is saved.
+        """
+        self._batch_mode = True
+        self._batch_next_provider = next_provider
+
+    @property
+    def batch_outcomes(self) -> dict[str, Any]:
+        """Aggregated batch results, populated as the dialog runs."""
+        return self._batch_outcomes
+
+    def _reset_state_for_swap(self) -> None:
+        """Wipe per-note state so the dialog can host a fresh query.
+
+        Mirrors the cleanup paths used in ``_on_requery`` /
+        ``_on_translate_clicked`` but without re-running search. The
+        caller is responsible for kicking off the new search (or
+        loading prefetched data) afterwards.
+        """
+        # Cancel previous in-flight orchestrator work. Note: we do
+        # NOT cancel batch_download_futures here; those are fire-and-
+        # forget and need to keep running on the background pool.
+        try:
+            self._cancel.cancel()
+        except Exception:
+            pass
+        self._cancel = CancellationToken()
+
+        # Clear grid + buffers
+        try:
+            self._grid_model.clear()
+        except Exception:
+            pass
+        try:
+            self._grid_widget.clear()
+        except Exception:
+            pass
+        self._url_to_item.clear()
+        self._provider_errors.clear()
+        self._provider_counts.clear()
+        self._pending_results.clear()
+        self._ready_results.clear()
+
+        # Reset progress + selection
+        self._thumbnails_total = 0
+        self._thumbnails_loaded = 0
+        self._thumbnails_failed = 0
+        self._current_page = 1
+        self._results_received = False
+        self._selection_locked = False
+        self._selected_result = None
+        self._skipped = False
+
+        # Hide translation banner; it will be re-set if the new note
+        # has a prefetched translation or runs translate again.
+        try:
+            self._translate_label.setVisible(False)
+        except Exception:
+            pass
+
+    def swap_to_query(
+        self,
+        *,
+        editor: Any,
+        query: str,
+        source_field: str,
+        target_field: str,
+        position: tuple[int, int],
+        prefetched_results: Optional[list] = None,
+        prefetched_errors: Optional[dict] = None,
+        prefetched_translation: Optional[str] = None,
+    ) -> None:
+        """Repurpose this dialog instance for the next batch note.
+
+        Replaces the editor/config/query without closing or rebuilding
+        the dialog. Avoids the visible flicker users see when the
+        existing implementation closes one dialog and opens another
+        for each note.
+
+        ``editor`` is typically a ``_BatchEditorShim`` bound to the
+        new note; ``source_field`` / ``target_field`` override the
+        config so we don't have to mutate the shared Config object.
+        """
+        from dataclasses import replace as _replace
+
+        self._reset_state_for_swap()
+
+        # Swap context
+        self._editor = editor
+        self._config = _replace(
+            self._config,
+            source_field=source_field,
+            target_field=target_field,
+        )
+        self._query = query
+        self._effective_query = query
+
+        # Refresh source field label + window title + search input
+        try:
+            self._source_label.setText(
+                f"<b>{source_field}</b>: <i>{query}</i>"
+            )
+            self._source_label.setToolTip(
+                f"Original text from the '{source_field}' field."
+            )
+        except Exception:
+            pass
+        try:
+            self.setWindowTitle(
+                f"Image Picker [{position[0]}/{position[1]}] — {query}"
+            )
+        except Exception:
+            pass
+        try:
+            self._search_input.blockSignals(True)
+            self._search_input.setText(query)
+            self._search_input.blockSignals(False)
+        except Exception:
+            pass
+
+        # Restart the flush timer if it was stopped
+        try:
+            if self._flush_timer is not None and not self._flush_timer.isActive():
+                self._flush_timer.start()
+        except Exception:
+            pass
+
+        # --- Use prefetched results or start fresh search ---
+        if prefetched_results:
+            if prefetched_errors:
+                for pid, msg in prefetched_errors.items():
+                    self._on_provider_failed(pid, msg)
+
+            if prefetched_translation and prefetched_translation != query:
+                self._effective_query = prefetched_translation
+                try:
+                    self.setWindowTitle(
+                        f"Image Picker [{position[0]}/{position[1]}] — "
+                        f"{query} → {prefetched_translation}"
+                    )
+                    self._search_input.blockSignals(True)
+                    self._search_input.setText(prefetched_translation)
+                    self._search_input.blockSignals(False)
+                    self._translate_label.setText(
+                        f"🌐 Translated: {query} → {prefetched_translation}"
+                    )
+                    self._translate_label.setVisible(True)
+                except Exception:
+                    pass
+
+            self._load_prefetched_synchronously(prefetched_results)
+            self._flush_all_ready()
+
+            uncached = []
+            for result in prefetched_results:
+                pending = self._pending_results.get(result.provider_id, {})
+                if result.thumbnail_url in pending:
+                    uncached.append(result)
+            if uncached:
+                self._start_thumbnail_downloads(uncached)
+        else:
+            self._start_search(query)
+
+        self._update_grid_display()
+        self._update_status_bar()
+
+    def _advance_batch(self) -> bool:
+        """Pull the next note from the batch provider and swap into it.
+
+        Returns True if the dialog moved on to a new note. Returns
+        False (and ``accept()`` is called) if the queue is exhausted.
+        """
+        if not self._batch_mode or self._batch_next_provider is None:
+            return False
+
+        try:
+            nxt = self._batch_next_provider()
+        except Exception as exc:
+            _log.exception("Batch provider raised: %s", exc)
+            self._batch_outcomes.setdefault("errors", []).append(str(exc))
+            nxt = None
+
+        if not nxt:
+            # Queue exhausted: wait for any in-flight downloads to
+            # finish so insertions complete before we close, then
+            # accept the dialog.
+            self._wait_for_batch_downloads()
+            self._remember_state()
+            self.accept()
+            return False
+
+        self.swap_to_query(
+            editor=nxt["editor"],
+            query=nxt["query"],
+            source_field=nxt["source_field"],
+            target_field=nxt["target_field"],
+            position=nxt["position"],
+            prefetched_results=nxt.get("prefetched_results"),
+            prefetched_errors=nxt.get("prefetched_errors"),
+            prefetched_translation=nxt.get("prefetched_translation"),
+        )
+        return True
+
+    def _get_batch_download_pool(self) -> Any:
+        """Return the (lazily created) background pool for full downloads."""
+        import concurrent.futures
+
+        if self._batch_download_pool is None:
+            # 4 concurrent downloads is a safe balance: enough to keep
+            # the network busy, low enough to avoid rate-limits.
+            self._batch_download_pool = concurrent.futures.ThreadPoolExecutor(
+                max_workers=4,
+                thread_name_prefix="ankivn-batch-dl",
+            )
+        return self._batch_download_pool
+
+    def _wait_for_batch_downloads(self) -> None:
+        """Block briefly until queued background downloads finish.
+
+        Called when the batch finishes to avoid losing in-flight
+        inserts. Bounded by a generous timeout so a stuck request
+        never hangs the dialog forever.
+        """
+        if not self._batch_download_futures:
+            return
+
+        try:
+            from aqt.utils import tooltip as _tooltip
+        except Exception:
+            _tooltip = None
+
+        pending = [f for f in self._batch_download_futures if not f.done()]
+        if not pending:
+            return
+
+        if _tooltip is not None:
+            try:
+                _tooltip(
+                    f"Finishing {len(pending)} background download(s)…",
+                    parent=self,
+                )
+            except Exception:
+                pass
+
+        import concurrent.futures
+        try:
+            concurrent.futures.wait(pending, timeout=30)
+        except Exception:
+            pass
+
     def closeEvent(self, event: Any) -> None:
         """Cancel in-flight operations before closing (Req 10.4).
 
@@ -1401,10 +1801,40 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         except Exception:
             pass
         self._cancel.cancel()
+
+        # In batch mode, wait for queued downloads so already-chosen
+        # images still land in their notes even if the user closes
+        # the dialog before the queue drains.
+        if self._batch_mode:
+            self._wait_for_batch_downloads()
+            try:
+                if self._batch_download_pool is not None:
+                    self._batch_download_pool.shutdown(wait=False)
+            except Exception:
+                pass
+
         super().closeEvent(event)
 
     def _on_skip_clicked(self) -> None:
-        """Handle Skip button: mark as skipped and close dialog."""
+        """Handle Skip button.
+
+        In single-note mode this rejects the dialog (legacy behaviour).
+        In batch mode it records the skip and advances to the next
+        note, keeping the dialog open.
+        """
+        if self._batch_mode:
+            self._batch_outcomes["skipped"] = (
+                self._batch_outcomes.get("skipped", 0) + 1
+            )
+            # Tag this note as skipped so the user can find it later.
+            try:
+                if hasattr(self._editor, "_skip_tag_note"):
+                    self._editor._skip_tag_note()
+            except Exception:
+                pass
+            self._advance_batch()
+            return
+
         self._remember_state()
         self._skipped = True
         self.reject()

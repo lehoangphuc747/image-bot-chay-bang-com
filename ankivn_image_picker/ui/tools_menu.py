@@ -134,7 +134,7 @@ def _on_tools_menu_clicked() -> None:
         # Prefetch notes ahead (batch mode performance tweak)
         prefetch_input = QSpinBox()
         prefetch_input.setRange(0, 20)
-        prefetch_input.setValue(raw_config.get("prefetch_notes_ahead", 5))
+        prefetch_input.setValue(raw_config.get("prefetch_notes_ahead", 8))
         prefetch_input.setSpecialValueText("Disabled")  # Shown when 0
         prefetch_input.setToolTip(
             "Number of upcoming notes to search ahead in batch mode (0-20).\n"
