@@ -206,6 +206,16 @@ def _on_batch_action(browser: Any) -> None:
         prefetch_errors: dict[str, dict[str, str]] = {}  # query -> {provider_id -> error}
         prefetch_translations: dict[str, str] = {}  # original_query -> translated_query
 
+        # Live counters for the dialog status bar.
+        # ``prefetch_seen`` tracks queries already submitted (to dedupe);
+        # ``prefetch_in_flight`` is decremented when a task finishes.
+        prefetch_seen: set[str] = set()
+        prefetch_state: dict[str, int] = {
+            "done": 0,
+            "in_flight": 0,
+        }
+        prefetch_lock = __import__("threading").Lock()
+
         def _prefetch_query(query: str) -> None:
             """Run search for a query AND warm the thumbnail cache."""
             from ..cancellation import CancellationToken
@@ -276,13 +286,37 @@ def _on_batch_action(browser: Any) -> None:
 
         # Kick off prefetch for first N notes
         prefetch_futures: list = []
+
+        def _submit_prefetch(q: str) -> None:
+            """Dedupe + counter-aware submission."""
+            with prefetch_lock:
+                if q in prefetch_cache or q in prefetch_seen:
+                    return
+                prefetch_seen.add(q)
+                prefetch_state["in_flight"] += 1
+
+            def _wrapped() -> None:
+                try:
+                    _prefetch_query(q)
+                finally:
+                    with prefetch_lock:
+                        prefetch_state["in_flight"] -= 1
+                        prefetch_state["done"] += 1
+
+            prefetch_futures.append(prefetch_pool.submit(_wrapped))
+
         if prefetch_ahead > 0:
             for i in range(min(prefetch_ahead, len(note_queries))):
-                q = note_queries[i][2]
-                if q not in prefetch_cache:
-                    prefetch_futures.append(
-                        prefetch_pool.submit(_prefetch_query, q)
-                    )
+                _submit_prefetch(note_queries[i][2])
+
+        def _prefetch_status_snapshot() -> dict:
+            """Snapshot for the dialog status bar."""
+            with prefetch_lock:
+                return {
+                    "done": prefetch_state["done"],
+                    "in_flight": prefetch_state["in_flight"],
+                    "total": len(note_queries),
+                }
 
         # --- Walk notes via a single reused dialog ---
         # Instead of opening N modal dialogs in a row (which makes the
@@ -307,9 +341,7 @@ def _on_batch_action(browser: Any) -> None:
                 for ahead in range(1, prefetch_ahead + 1):
                     future_idx = seq_idx + ahead
                     if future_idx < len(note_queries):
-                        future_q = note_queries[future_idx][2]
-                        if future_q not in prefetch_cache:
-                            prefetch_pool.submit(_prefetch_query, future_q)
+                        _submit_prefetch(note_queries[future_idx][2])
 
             try:
                 note = mw.col.get_note(nid)
@@ -395,7 +427,7 @@ def _on_batch_action(browser: Any) -> None:
         except Exception:
             pass
 
-        dialog.start_batch(_next_job)
+        dialog.start_batch(_next_job, prefetch_status=_prefetch_status_snapshot)
 
         try:
             dialog.exec()

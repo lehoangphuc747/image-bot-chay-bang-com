@@ -375,6 +375,11 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         # time. Lets _on_download_complete write to the right note
         # even after the dialog has swapped to a different one.
         self._batch_jobs: dict[str, dict[str, Any]] = {}
+        # Optional zero-arg callable returning prefetch progress info.
+        # Populated by start_batch when the caller wants the status
+        # bar to show how many notes have been prefetched ahead.
+        self._batch_prefetch_status: Optional[Any] = None
+        self._prefetch_poll_timer: Optional[Any] = None
 
         # Round-robin buffers: per-provider queues for interleaved display.
         # Two-stage pipeline:
@@ -1471,6 +1476,26 @@ class PickerDialog(QDialog):  # type: ignore[misc]
             if pid not in self._provider_counts:
                 parts.append(f"{pid}: ❌")
 
+        # Batch-mode prefetch progress (📦 Prefetched X/Y notes · Z in flight)
+        prefetch_str = ""
+        if self._batch_mode and self._batch_prefetch_status is not None:
+            try:
+                status = self._batch_prefetch_status() or {}
+                done = int(status.get("done", 0))
+                total = int(status.get("total", 0))
+                in_flight = int(status.get("in_flight", 0))
+                if total > 0:
+                    if done < total:
+                        prefetch_str = (
+                            f" | 📦 Prefetched {done}/{total} notes"
+                        )
+                        if in_flight > 0:
+                            prefetch_str += f" · {in_flight} in flight"
+                    else:
+                        prefetch_str = f" | 📦 Prefetched {done}/{total} ✅"
+            except Exception:
+                prefetch_str = ""
+
         if parts:
             total = sum(self._provider_counts.values())
 
@@ -1494,10 +1519,15 @@ class PickerDialog(QDialog):  # type: ignore[misc]
                 progress_str = ""
 
             self._status_label.setText(
-                f"Total: {total} | " + " · ".join(parts) + progress_str
+                f"Total: {total} | "
+                + " · ".join(parts)
+                + progress_str
+                + prefetch_str
             )
         else:
-            self._status_label.setText("")
+            # No provider activity yet — but still show prefetch
+            # progress if batch mode is starting up.
+            self._status_label.setText(prefetch_str.lstrip(" |").strip())
 
     def _show_empty_state(self, message: str) -> None:
         """Show an empty-state message when no results are available."""
@@ -1525,7 +1555,7 @@ class PickerDialog(QDialog):  # type: ignore[misc]
     # Batch mode: reuse a single dialog for many notes
     # ------------------------------------------------------------------
 
-    def start_batch(self, next_provider: Any) -> None:
+    def start_batch(self, next_provider: Any, prefetch_status: Optional[Any] = None) -> None:
         """Enter batch mode driven by ``next_provider``.
 
         ``next_provider`` is a zero-arg callable returning either a
@@ -1535,6 +1565,11 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         ``prefetched_translation`` — or ``None`` to signal the queue
         is empty.
 
+        ``prefetch_status`` is an optional zero-arg callable returning
+        a dict ``{"done": int, "total": int, "in_flight": int}``. The
+        dialog polls it periodically and shows progress in the status
+        bar so users can see prefetch coverage in real time.
+
         The dialog enables fire-and-forget full-image downloads:
         double-clicking an image kicks off the download on a
         background pool and immediately advances to the next note,
@@ -1542,6 +1577,22 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         """
         self._batch_mode = True
         self._batch_next_provider = next_provider
+        self._batch_prefetch_status = prefetch_status
+
+        # Poll prefetch status every 250ms while the dialog is open so
+        # the status bar reflects newly completed prefetches without
+        # requiring a search/thumbnail event to land.
+        if prefetch_status is not None:
+            try:
+                from aqt.qt import QTimer  # type: ignore[import-not-found]
+                self._prefetch_poll_timer = QTimer(self)
+                self._prefetch_poll_timer.setInterval(250)
+                self._prefetch_poll_timer.timeout.connect(
+                    self._update_status_bar
+                )
+                self._prefetch_poll_timer.start()
+            except Exception:
+                self._prefetch_poll_timer = None
 
     @property
     def batch_outcomes(self) -> dict[str, Any]:
@@ -1798,6 +1849,12 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         try:
             if self._flush_timer is not None:
                 self._flush_timer.stop()
+        except Exception:
+            pass
+        # Stop the prefetch poll timer
+        try:
+            if self._prefetch_poll_timer is not None:
+                self._prefetch_poll_timer.stop()
         except Exception:
             pass
         self._cancel.cancel()
