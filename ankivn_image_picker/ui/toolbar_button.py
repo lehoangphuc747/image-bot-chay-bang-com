@@ -117,13 +117,19 @@ def _on_button_click(editor: Any) -> None:
 
         from ..cache import ThumbnailCache
 
-        cache_root = (
-            Path(mw.addonManager.addonsFolder(__name__.split(".")[0]))
-            / "user_files"
-            / "thumbnail_cache"
-        )
+        addon_root = Path(mw.addonManager.addonsFolder(__name__.split(".")[0]))
+        cache_root = addon_root / "user_files" / "thumbnail_cache"
         max_cache_bytes = config.thumbnail_cache_max_mb * 1024 * 1024
         cache = ThumbnailCache(cache_root, max_cache_bytes)
+
+        # Search-result metadata cache.
+        from ..search_cache import SearchCache
+
+        search_cache = SearchCache(addon_root / "user_files" / "search_cache")
+        try:
+            search_cache.prune_expired()
+        except Exception:
+            pass
 
         # Open the picker dialog (validation happens inside)
         from .picker_dialog import PickerDialog
@@ -135,6 +141,7 @@ def _on_button_click(editor: Any) -> None:
             http=http,
             cache=cache,
             parent=editor.parentWindow if hasattr(editor, "parentWindow") else None,
+            search_cache=search_cache,
         )
 
         if dialog is not None:

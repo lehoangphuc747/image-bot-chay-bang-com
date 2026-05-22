@@ -42,6 +42,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from .config import Config
     from .http import HttpClient
     from .providers.base import ImageProvider, ImageResult
+    from .search_cache import SearchCache
     from .ui.worker_bus import WorkerBus
 
 
@@ -81,6 +82,7 @@ class SearchOrchestrator:
         bus: "WorkerBus",
         cancel: "CancellationToken",
         pool: Optional[concurrent.futures.ThreadPoolExecutor] = None,
+        search_cache: Optional["SearchCache"] = None,
     ) -> None:
         self._providers = providers
         self._cfg = cfg
@@ -88,6 +90,7 @@ class SearchOrchestrator:
         self._cache = cache
         self._bus = bus
         self._cancel = cancel
+        self._search_cache = search_cache
         self._pool = pool or concurrent.futures.ThreadPoolExecutor(
             # Pool serves both provider searches and thumbnail
             # downloads. With persistent connections enabled in
@@ -120,12 +123,30 @@ class SearchOrchestrator:
         # Get the effective limit for this specific provider
         max_results = get_provider_limit(provider.id, self._cfg)
 
+        # Cache lookup is page-1 only — pagination always hits the
+        # network so users explicitly clicking "Load More" still see
+        # fresh results past the initial page.
+        if page == 1 and self._search_cache is not None:
+            try:
+                cached_results = self._search_cache.get(provider.id, query)
+            except Exception:
+                cached_results = None
+            if cached_results:
+                try:
+                    for result in cached_results:
+                        self._cancel.raise_if_cancelled()
+                        self._bus.result_ready.emit(result)
+                        self._pool.submit(self._download_thumbnail, result)
+                    return
+                except CancelledError:
+                    return
+
         try:
             self._cancel.raise_if_cancelled()
             # Try with page kwarg; fall back to old signature for
             # providers that don't yet accept it.
             try:
-                results = provider.search(
+                raw_results = provider.search(
                     query,
                     max_results=max_results,
                     http=self._http,
@@ -133,17 +154,29 @@ class SearchOrchestrator:
                     page=page,
                 )
             except TypeError:
-                results = provider.search(
+                raw_results = provider.search(
                     query,
                     max_results=max_results,
                     http=self._http,
                     cancel=self._cancel,
                 )
+            # Materialise so we can both emit and cache. ``search`` may
+            # return a generator, and we want the same list flowing to
+            # the bus and the disk.
+            results = list(raw_results)
             for result in results:
                 self._cancel.raise_if_cancelled()
                 self._bus.result_ready.emit(result)
                 # Schedule thumbnail download
                 self._pool.submit(self._download_thumbnail, result)
+
+            # Write-through to disk so a later same-query open skips
+            # the provider API entirely.
+            if page == 1 and self._search_cache is not None and results:
+                try:
+                    self._search_cache.put(provider.id, query, results)
+                except Exception:
+                    pass
         except CancelledError:
             # Silently swallow — no signal after cancellation (Property 16)
             return

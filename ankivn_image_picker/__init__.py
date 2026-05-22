@@ -154,6 +154,18 @@ def _open_picker(editor: object) -> None:
         max_cache_bytes = config.thumbnail_cache_max_mb * 1024 * 1024
         cache = ThumbnailCache(cache_root, max_cache_bytes)
 
+        # Search-result metadata cache (sibling to thumbnail cache).
+        # Lets a same-query re-open skip the provider API entirely.
+        from .search_cache import SearchCache
+
+        search_cache = SearchCache(
+            Path(addon_folder) / "user_files" / "search_cache"
+        )
+        try:
+            search_cache.prune_expired()
+        except Exception:
+            pass
+
         # Open the picker dialog (validation happens inside)
         from .ui.picker_dialog import PickerDialog
 
@@ -164,6 +176,7 @@ def _open_picker(editor: object) -> None:
             http=http,
             cache=cache,
             parent=getattr(editor, "parentWindow", None),
+            search_cache=search_cache,
         )
 
         if dialog is not None:

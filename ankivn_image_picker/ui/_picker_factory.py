@@ -32,6 +32,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from ..config import Config
     from ..http import HttpClient
     from ..providers.base import ImageProvider
+    from ..search_cache import SearchCache
 
 
 _log = get_logger("picker_factory")
@@ -52,6 +53,7 @@ class PickerDeps(NamedTuple):
     providers: list["ImageProvider"]
     http: "HttpClient"
     cache: "ThumbnailCache"
+    search_cache: "SearchCache"
 
 
 def build_picker_deps() -> Optional[PickerDeps]:
@@ -121,7 +123,27 @@ def build_picker_deps() -> Optional[PickerDeps]:
     max_cache_bytes = config.thumbnail_cache_max_mb * 1024 * 1024
     cache = ThumbnailCache(cache_root, max_cache_bytes)
 
-    return PickerDeps(config=config, providers=providers, http=http, cache=cache)
+    # Search-result metadata cache lives next to the thumbnail cache.
+    # Combined, the two caches let a re-run of the same batch skip
+    # network entirely.
+    from ..search_cache import SearchCache
+
+    search_cache_root = Path(addon_folder) / "user_files" / "search_cache"
+    search_cache = SearchCache(search_cache_root)
+    # Best-effort hygiene: remove entries past their TTL so the
+    # directory doesn't grow forever. Cheap (just stat + unlink).
+    try:
+        search_cache.prune_expired()
+    except Exception:
+        pass
+
+    return PickerDeps(
+        config=config,
+        providers=providers,
+        http=http,
+        cache=cache,
+        search_cache=search_cache,
+    )
 
 
 __all__ = ["PickerDeps", "build_picker_deps", "ADDON_PACKAGE"]

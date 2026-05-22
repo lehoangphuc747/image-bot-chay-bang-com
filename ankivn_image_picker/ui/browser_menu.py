@@ -331,15 +331,35 @@ def _on_batch_action(browser: Any) -> None:
             results: list = []
             errors: dict[str, str] = {}  # provider_id -> error message
             for provider in deps.providers:
+                # Cache lookup first: if every provider for this query
+                # has a fresh entry on disk, we skip network entirely.
+                cached = None
+                try:
+                    cached = deps.search_cache.get(provider.id, search_query)
+                except Exception:
+                    cached = None
+                if cached is not None:
+                    results.extend(cached)
+                    continue
                 try:
                     max_n = get_provider_limit(provider.id, config)
+                    provider_results: list = []
                     for result in provider.search(
                         search_query,
                         max_results=max_n,
                         http=deps.http,
                         cancel=cancel,
                     ):
-                        results.append(result)
+                        provider_results.append(result)
+                    results.extend(provider_results)
+                    # Write-through to disk so the next batch re-run
+                    # over the same query is instant.
+                    try:
+                        deps.search_cache.put(
+                            provider.id, search_query, provider_results
+                        )
+                    except Exception:
+                        pass
                 except ProviderError as exc:
                     errors[provider.id] = str(exc)
                 except Exception as exc:
@@ -533,6 +553,7 @@ def _on_batch_action(browser: Any) -> None:
             prefetched_results=first_job["prefetched_results"],
             prefetched_errors=first_job["prefetched_errors"],
             prefetched_translation=first_job["prefetched_translation"],
+            search_cache=deps.search_cache,
         )
         try:
             pos = first_job["position"]

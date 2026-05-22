@@ -353,6 +353,7 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         prefetched_results: Optional[list] = None,
         prefetched_errors: Optional[dict] = None,
         prefetched_translation: Optional[str] = None,
+        search_cache: Optional[Any] = None,
     ) -> None:
         super().__init__(parent)
         self._editor = editor
@@ -361,6 +362,7 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         self._providers = providers
         self._http = http
         self._cache = cache
+        self._search_cache = search_cache
 
         # --- Owned components ---
         self._cancel = CancellationToken()
@@ -958,6 +960,7 @@ class PickerDialog(QDialog):  # type: ignore[misc]
             cache=self._cache,
             bus=self._bus,
             cancel=self._cancel,
+            search_cache=self._search_cache,
         )
         self._orchestrator.run(query, page=page)
 
@@ -2667,6 +2670,7 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         http: "HttpClient",
         cache: "ThumbnailCache",
         parent: Any = None,
+        search_cache: Optional[Any] = None,
     ) -> Optional["PickerDialog"]:
         """Validate the source field and open the picker if valid.
 
@@ -2744,6 +2748,7 @@ class PickerDialog(QDialog):  # type: ignore[misc]
             http=http,
             cache=cache,
             parent=parent,
+            search_cache=search_cache,
         )
         return dialog
 
