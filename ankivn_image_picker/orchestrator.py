@@ -89,7 +89,13 @@ class SearchOrchestrator:
         self._bus = bus
         self._cancel = cancel
         self._pool = pool or concurrent.futures.ThreadPoolExecutor(
-            max_workers=min(len(providers), 8) if providers else 1
+            # Pool serves both provider searches and thumbnail
+            # downloads. With persistent connections enabled in
+            # HttpClient, raising the cap from 8 to 16 lets thumbnail
+            # downloads parallelise without saturating any single
+            # provider host (each host has its own pool slot via the
+            # adapter's pool_maxsize).
+            max_workers=max(len(providers) * 2, 16) if providers else 1
         )
 
     def run(self, query: str, *, page: int = 1) -> None:

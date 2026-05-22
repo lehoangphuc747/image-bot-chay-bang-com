@@ -113,7 +113,7 @@ def test_http_client_default_timeout_attribute_matches_constant() -> None:
 
 
 def test_http_client_get_passes_timeout_tuple_to_requests_get() -> None:
-    """``HttpClient.get`` forwards ``timeout=(5.0, 10.0)`` to ``requests.get``.
+    """``HttpClient.get`` forwards ``timeout=(5.0, 10.0)`` to the session.
 
     Without this assertion a future refactor could drop the keyword,
     pass a single scalar (which collapses both legs into one), or
@@ -124,7 +124,7 @@ def test_http_client_get_passes_timeout_tuple_to_requests_get() -> None:
     captured_kwargs: List[Dict[str, Any]] = []
     captured_args: List[tuple] = []
 
-    def fake_get(*args: Any, **kwargs: Any) -> _FakeResponse:
+    def fake_get(self: Any, *args: Any, **kwargs: Any) -> _FakeResponse:
         captured_args.append(args)
         captured_kwargs.append(kwargs)
         return _FakeResponse()
@@ -132,11 +132,10 @@ def test_http_client_get_passes_timeout_tuple_to_requests_get() -> None:
     client = HttpClient()
     cancel = CancellationToken()
 
-    # Patch the ``requests`` reference imported into the http module,
-    # not the upstream package. ``HttpClient.get`` calls
-    # ``requests.get`` via the module-level ``import requests``, so
-    # this is the binding that needs to be replaced.
-    with patch("ankivn_image_picker.http.requests.get", side_effect=fake_get):
+    # ``HttpClient`` now keeps a persistent ``requests.Session`` so
+    # connections can be reused across calls. Patch ``Session.get``
+    # rather than the module-level ``requests.get``.
+    with patch("requests.Session.get", new=fake_get):
         response = client.get(
             "https://example.test/image.png", cancel=cancel
         )
@@ -150,7 +149,7 @@ def test_http_client_get_passes_timeout_tuple_to_requests_get() -> None:
 
     kwargs = captured_kwargs[0]
     # The whole point of the test: the timeout the client hands to
-    # ``requests.get`` must be the documented (connect, read) tuple.
+    # ``Session.get`` must be the documented (connect, read) tuple.
     assert kwargs.get("timeout") == (5.0, 10.0)
     assert sum(kwargs["timeout"]) == 15.0
     # ``stream=True`` is part of the same call contract -- losing it
@@ -169,14 +168,14 @@ def test_http_client_custom_timeout_is_forwarded_to_requests_get() -> None:
 
     captured_kwargs: List[Dict[str, Any]] = []
 
-    def fake_get(*args: Any, **kwargs: Any) -> _FakeResponse:
+    def fake_get(self: Any, *args: Any, **kwargs: Any) -> _FakeResponse:
         captured_kwargs.append(kwargs)
         return _FakeResponse()
 
     client = HttpClient(timeout=(2.0, 3.0))
     cancel = CancellationToken()
 
-    with patch("ankivn_image_picker.http.requests.get", side_effect=fake_get):
+    with patch("requests.Session.get", new=fake_get):
         client.get("https://example.test/image.png", cancel=cancel)
 
     assert client.timeout == (2.0, 3.0)

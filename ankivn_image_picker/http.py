@@ -123,6 +123,43 @@ class HttpClient:
             ),
         }
 
+        # Persistent session with a generously sized connection pool.
+        # Each thumbnail/full-image fetch is a separate request, but
+        # they go to a small set of hosts (one per provider). Without
+        # a session every request pays for a fresh TCP+TLS handshake
+        # — typically 300-800 ms of round-trip latency. The session
+        # below keeps connections alive so subsequent requests to the
+        # same host complete in roughly one RTT.
+        try:
+            from requests.adapters import HTTPAdapter
+            from urllib3.util.retry import Retry  # type: ignore[import-untyped]
+        except Exception:  # pragma: no cover - urllib3 always ships with requests
+            HTTPAdapter = None  # type: ignore[assignment]
+            Retry = None  # type: ignore[assignment]
+
+        self._session: requests.Session = requests.Session()
+        if HTTPAdapter is not None:
+            # pool_connections = number of distinct hosts to keep
+            # connections for; pool_maxsize = max sockets per host.
+            # Image providers we hit live on a handful of hosts and
+            # may serve dozens of parallel thumbnails, so keep both
+            # numbers comfortably above worker count.
+            adapter_kwargs: dict = {
+                "pool_connections": 16,
+                "pool_maxsize": 32,
+                "pool_block": False,
+            }
+            if Retry is not None:
+                # No retries: providers handle their own back-off and
+                # we don't want a stalled host to delay every request.
+                adapter_kwargs["max_retries"] = Retry(total=0)
+            adapter = HTTPAdapter(**adapter_kwargs)
+            self._session.mount("https://", adapter)
+            self._session.mount("http://", adapter)
+        # Apply default headers once so we don't re-send the dict
+        # per call.
+        self._session.headers.update(self._headers)
+
     def get(
         self, url: str, *, cancel: "CancellationToken"
     ) -> HttpResponse:
@@ -141,9 +178,8 @@ class HttpClient:
         cancel.raise_if_cancelled()
 
         try:
-            response = requests.get(
+            response = self._session.get(
                 url, timeout=self.timeout, stream=True,
-                headers=self._headers,
             )
         except requests.Timeout as exc:
             raise DownloadError(f"timeout fetching {url}") from exc

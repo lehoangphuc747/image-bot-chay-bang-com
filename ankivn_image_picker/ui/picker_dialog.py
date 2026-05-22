@@ -1016,7 +1016,11 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         from ..orchestrator import ThumbnailDownloader
 
         pool = concurrent.futures.ThreadPoolExecutor(
-            max_workers=min(len(results), 4) if results else 1
+            # 8 workers keeps the connection pool busy without
+            # overwhelming any single provider host. With keep-alive
+            # enabled in the HTTP client, latency-bound work scales
+            # almost linearly here.
+            max_workers=min(len(results), 8) if results else 1
         )
         for result in results:
             downloader = ThumbnailDownloader(
