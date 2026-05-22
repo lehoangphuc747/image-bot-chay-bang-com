@@ -105,7 +105,7 @@ def _on_batch_action(browser: Any) -> None:
         )
 
         field_dialog = QDialog(browser)
-        field_dialog.setWindowTitle("Image Picker — Batch Setup")
+        field_dialog.setWindowTitle("⚡ Image Picker · Batch Setup")
         field_dialog.setMinimumWidth(400)
         dlg_layout = QVBoxLayout(field_dialog)
 
@@ -537,7 +537,7 @@ def _on_batch_action(browser: Any) -> None:
         try:
             pos = first_job["position"]
             dialog.setWindowTitle(
-                f"Image Picker [{pos[0]}/{pos[1]}] — {first_job['query']}"
+                f"⚡ Image Picker · Batch [{pos[0]}/{pos[1]}] · {first_job['query']}"
             )
         except Exception:
             pass
@@ -696,7 +696,7 @@ def _run_picker_for_note(
     # Decorate the title so the user knows where they are in the batch.
     try:
         dialog.setWindowTitle(
-            f"Image Picker [{position[0]}/{position[1]}] — {query}"
+            f"⚡ Image Picker · Batch [{position[0]}/{position[1]}] · {query}"
         )
     except Exception:
         pass

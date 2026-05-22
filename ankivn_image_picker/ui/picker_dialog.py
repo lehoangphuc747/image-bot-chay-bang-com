@@ -448,7 +448,7 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         self._connect_signals()
 
         # --- Show query in title (Req 6.1) ---
-        self.setWindowTitle(f"Image Picker — {self._query}")
+        self.setWindowTitle(f"⚡ Image Picker · {self._query}")
         try:
             # Allow maximize button on the dialog
             from aqt.qt import Qt as QtCore  # type: ignore[import-not-found]
@@ -504,7 +504,7 @@ class PickerDialog(QDialog):  # type: ignore[misc]
                 self._effective_query = prefetched_translation
                 try:
                     self.setWindowTitle(
-                        f"Image Picker — {self._query} → {prefetched_translation}"
+                        f"⚡ Image Picker · {self._query} → {prefetched_translation}"
                     )
                     self._search_input.blockSignals(True)
                     self._search_input.setText(prefetched_translation)
@@ -1009,7 +1009,7 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         if translated and translated != original:
             try:
                 self.setWindowTitle(
-                    f"Image Picker — {original} → {translated}"
+                    f"⚡ Image Picker · {original} → {translated}"
                 )
                 # Update search bar to show what's actually being searched
                 self._search_input.blockSignals(True)
@@ -1570,7 +1570,7 @@ class PickerDialog(QDialog):  # type: ignore[misc]
             # Search directly with what the user typed
             self._query = new_query
             self._effective_query = new_query
-            self.setWindowTitle(f"Image Picker — {self._query}")
+            self.setWindowTitle(f"⚡ Image Picker · {self._query}")
             self._translate_label.setVisible(False)
             self._dispatch_search(self._query)
 
@@ -2072,8 +2072,8 @@ class PickerDialog(QDialog):  # type: ignore[misc]
                     f"<b>{job['source_field']}</b>: <i>{job['query']}</i>"
                 )
                 self.setWindowTitle(
-                    f"Image Picker [{job['position'][0]}/"
-                    f"{job['position'][1]}] — {job['query']}"
+                    f"⚡ Image Picker · Batch [{job['position'][0]}/"
+                    f"{job['position'][1]}] · {job['query']}"
                 )
                 self._search_input.blockSignals(True)
                 self._search_input.setText(job["query"])
@@ -2321,7 +2321,7 @@ class PickerDialog(QDialog):  # type: ignore[misc]
             pass
         try:
             self.setWindowTitle(
-                f"Image Picker [{position[0]}/{position[1]}] — {query}"
+                f"⚡ Image Picker · Batch [{position[0]}/{position[1]}] · {query}"
             )
         except Exception:
             pass
@@ -2349,7 +2349,7 @@ class PickerDialog(QDialog):  # type: ignore[misc]
                 self._effective_query = prefetched_translation
                 try:
                     self.setWindowTitle(
-                        f"Image Picker [{position[0]}/{position[1]}] — "
+                        f"⚡ Image Picker · Batch [{position[0]}/{position[1]}] · "
                         f"{query} → {prefetched_translation}"
                     )
                     self._search_input.blockSignals(True)

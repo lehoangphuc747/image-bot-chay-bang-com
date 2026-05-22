@@ -380,7 +380,7 @@ def _on_tools_menu_clicked() -> None:
         raw_config = mw.addonManager.getConfig(ADDON_PACKAGE) or {}
 
         dialog = QDialog(mw)
-        dialog.setWindowTitle("⚡ Image Picker — Settings")
+        dialog.setWindowTitle("⚡ Image Picker · Settings")
         dialog.setMinimumWidth(560)
         dialog.setMinimumHeight(520)
 
