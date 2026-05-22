@@ -14,7 +14,7 @@ from ..logging import get_logger
 _log = get_logger("tools_menu")
 
 #: Label displayed under the AnkiVN parent menu.
-_MENU_LABEL = "Image Picker - from AnkiVN with ❤️"
+_MENU_LABEL = "⚡ Image Picker"
 
 
 def _on_tools_menu_clicked() -> None:
@@ -42,14 +42,14 @@ def _on_tools_menu_clicked() -> None:
 
         # --- Build the dialog ---
         dialog = QDialog(mw)
-        dialog.setWindowTitle("AnkiVN Image Picker — Settings")
+        dialog.setWindowTitle("Image Picker — Settings")
         dialog.setMinimumWidth(500)
 
         layout = QVBoxLayout(dialog)
 
         # Header
         header = QLabel(
-            "<h3>AnkiVN Image Picker Settings</h3>"
+            "<h3>Image Picker Settings</h3>"
             "<p>Configure your API keys and field mappings below. "
             "Changes take effect the next time you open the picker.</p>"
         )
@@ -170,7 +170,7 @@ def _on_tools_menu_clicked() -> None:
             "• <b>Single note:</b> Open editor → click the image-picker "
             "toolbar button.<br>"
             "• <b>Batch:</b> Browser → select notes → "
-            "<i>Notes → AnkiVN Image Picker (Selected Notes)</i>"
+            "<i>Notes → Image Picker (Selected Notes)</i>"
         )
         help_label.setWordWrap(True)
         layout.addWidget(help_label)
@@ -212,7 +212,7 @@ def _on_tools_menu_clicked() -> None:
         try:
             from aqt.utils import showCritical  # type: ignore[import-not-found]
 
-            showCritical(f"AnkiVN Image Picker settings error:\n{exc}")
+            showCritical(f"Image Picker settings error:\n{exc}")
         except Exception:
             pass
 

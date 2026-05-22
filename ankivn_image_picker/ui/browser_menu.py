@@ -40,7 +40,7 @@ if TYPE_CHECKING:  # pragma: no cover
 _log = get_logger("browser_menu")
 
 #: Label shown in the Browser's Notes menu.
-_MENU_LABEL = "AnkiVN Image Picker (Selected Notes)"
+_MENU_LABEL = "⚡ Image Picker (Selected Notes)"
 
 
 def _on_batch_action(browser: Any) -> None:
@@ -104,7 +104,7 @@ def _on_batch_action(browser: Any) -> None:
         )
 
         field_dialog = QDialog(browser)
-        field_dialog.setWindowTitle("AnkiVN Image Picker — Batch Setup")
+        field_dialog.setWindowTitle("Image Picker — Batch Setup")
         field_dialog.setMinimumWidth(400)
         dlg_layout = QVBoxLayout(field_dialog)
 
@@ -494,7 +494,7 @@ def _on_batch_action(browser: Any) -> None:
             from aqt.utils import showCritical  # type: ignore[import-not-found]
 
             showCritical(
-                f"AnkiVN Image Picker batch failed:\n{exc}",
+                f"Image Picker batch failed:\n{exc}",
                 parent=browser,
             )
         except Exception:

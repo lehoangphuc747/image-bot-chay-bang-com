@@ -1,8 +1,8 @@
-# AnkiVN Smart Image Picker — Configuration
+# ⚡ Image Picker - Fastest Image Search & Insert (by AnkiVN) — Configuration
 
-Edit this configuration through Anki's **Tools → Add-ons → AnkiVN Smart Image
-Picker → Config** dialog. Changes apply the next time you open the picker; no
-Anki restart is required.
+Edit this configuration through Anki's **Tools → Add-ons → ⚡ Image Picker -
+Fastest Image Search & Insert (by AnkiVN) → Config** dialog. Changes apply
+the next time you open the picker; no Anki restart is required.
 
 If the configuration file is missing, every key falls back to the default value
 listed below and a single warning is written to the Anki debug console. If a
@@ -63,7 +63,7 @@ Click "Load More" to fetch the next page.
 - **Type:** integer
 - **Allowed range:** `0`–`20` (inclusive)
 - **Default:** `5`
-- **Purpose:** In batch mode (Browser → AnkiVN Image Picker), how many
+- **Purpose:** In batch mode (Browser → ⚡ Image Picker), how many
   upcoming notes to start searching for in the background while the user
   is interacting with the current note. Higher values mean less waiting
   but more API requests upfront. Set to `0` to disable prefetching.

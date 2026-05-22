@@ -33,7 +33,7 @@ if not os.path.isfile(_ICON_PATH):
     _ICON_PATH = ""
 
 # Tooltip shown on hover (Req 2.2)
-_TOOLTIP = "AnkiVN Image Picker"
+_TOOLTIP = "Image Picker"
 
 # Command identifier for the button
 _CMD = "ankivn_image_picker"
@@ -147,7 +147,7 @@ def _on_button_click(editor: Any) -> None:
             from aqt.utils import showCritical  # type: ignore[import-not-found]
 
             showCritical(
-                f"AnkiVN Image Picker encountered an error:\n{exc}"
+                f"Image Picker encountered an error:\n{exc}"
             )
         except Exception:
             pass

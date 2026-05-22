@@ -1,4 +1,4 @@
-# AnkiVN Image Picker — Roadmap
+# ⚡ Image Picker (by AnkiVN) — Roadmap
 
 Danh sách bug, design issue và missing features được phân loại theo mức ưu tiên. Cập nhật khi có thêm phát hiện hoặc khi item được hoàn thành.
 

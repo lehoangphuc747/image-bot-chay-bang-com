@@ -87,7 +87,7 @@ def _on_editor_init_buttons(buttons: list, editor: object) -> None:
             from aqt.utils import showCritical  # type: ignore[import-not-found]
 
             showCritical(
-                f"AnkiVN Image Picker failed to add toolbar button:\n{exc}"
+                f"Image Picker failed to add toolbar button:\n{exc}"
             )
         except Exception:
             pass
@@ -175,7 +175,7 @@ def _open_picker(editor: object) -> None:
             from aqt.utils import showCritical  # type: ignore[import-not-found]
 
             showCritical(
-                f"AnkiVN Image Picker encountered an error:\n{exc}"
+                f"Image Picker encountered an error:\n{exc}"
             )
         except Exception:
             pass
@@ -200,7 +200,7 @@ def _show_config_help() -> None:
             from aqt.utils import showCritical  # type: ignore[import-not-found]
 
             showCritical(
-                f"AnkiVN Image Picker failed to open config:\n{exc}"
+                f"Image Picker failed to open config:\n{exc}"
             )
         except Exception:
             pass
@@ -235,7 +235,7 @@ def _setup_hooks() -> None:
         addon_name = mw.addonManager.addonFromModule(__name__)
         mw.addonManager.setConfigAction(addon_name, _show_config_help)
 
-        _log.info("AnkiVN Image Picker hooks registered successfully.")
+        _log.info("Image Picker hooks registered successfully.")
 
     except ImportError:
         # Running outside Anki (e.g. in the test suite). Hooks cannot
@@ -250,7 +250,7 @@ def _setup_hooks() -> None:
             from aqt.utils import showCritical  # type: ignore[import-not-found]
 
             showCritical(
-                f"AnkiVN Image Picker failed to initialise:\n{exc}"
+                f"Image Picker failed to initialise:\n{exc}"
             )
         except Exception:
             pass
