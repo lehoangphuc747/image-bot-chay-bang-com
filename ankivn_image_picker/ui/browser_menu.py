@@ -257,14 +257,21 @@ def _on_batch_action(browser: Any) -> None:
         import concurrent.futures
 
         prefetch_ahead = max(0, config.prefetch_notes_ahead)
-        # Pool sized to handle concurrent metadata fetches AND thumbnail
-        # downloads. Each note prefetch does 1 metadata call per
-        # provider plus N thumbnail downloads, so we need plenty of
-        # workers to avoid serialising thumbnails behind metadata.
-        pool_size = max(2, min(prefetch_ahead * 2, 16))
+        # Pool sized so the user's prefetch-ahead setting is honoured
+        # without artificial throttling. Each prefetched note runs one
+        # provider call plus thumbnail downloads, so we want roughly
+        # 2x parallelism over ``prefetch_ahead`` to keep both kinds of
+        # I/O moving. Lower bound 2 keeps something running even when
+        # prefetch is disabled, upper bound 32 protects against
+        # ``prefetch_ahead`` being unrealistically high.
+        pool_size = max(2, min(prefetch_ahead * 2, 32))
 
         prefetch_pool = concurrent.futures.ThreadPoolExecutor(
             max_workers=pool_size
+        )
+        _log.info(
+            "Batch prefetch: prefetch_ahead=%d, pool_size=%d, total_notes=%d",
+            prefetch_ahead, pool_size, len(nids),
         )
         prefetch_cache: dict[str, list] = {}  # query -> list of ImageResult
         prefetch_errors: dict[str, dict[str, str]] = {}  # query -> {provider_id -> error}
