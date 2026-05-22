@@ -625,6 +625,29 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         self._grid_widget.setSelectionMode(
             QListWidget.SelectionMode.SingleSelection
         )
+
+        # Smooth scrolling: by default QListView in IconMode jumps an
+        # entire row per wheel-tick, which feels janky on a grid of
+        # ~158px-tall thumbnails. Switch to per-pixel scroll so the
+        # view glides instead of snapping. Uniform item sizes lets Qt
+        # cache the size hint, avoiding re-layout work on every paint.
+        try:
+            self._grid_widget.setVerticalScrollMode(
+                QListWidget.ScrollMode.ScrollPerPixel
+            )
+            self._grid_widget.setHorizontalScrollMode(
+                QListWidget.ScrollMode.ScrollPerPixel
+            )
+            self._grid_widget.setUniformItemSizes(True)
+            vbar = self._grid_widget.verticalScrollBar()
+            if vbar is not None:
+                # 20px per wheel-notch ~= ⅛ of a row. Smooth without
+                # making the scrollbar feel sluggish.
+                vbar.setSingleStep(20)
+        except Exception:
+            # Test stubs don't expose these methods — ignore.
+            pass
+
         self._grid_widget.itemDoubleClicked.connect(self._on_item_double_clicked)
 
         # Wrap the grid in a horizontal splitter so batch mode can
@@ -820,6 +843,14 @@ class PickerDialog(QDialog):  # type: ignore[misc]
             self._batch_list_widget.itemClicked.connect(
                 self._on_batch_note_clicked
             )
+            # Smooth pixel-based scroll, same reasoning as the grid.
+            self._batch_list_widget.setVerticalScrollMode(
+                QListWidget.ScrollMode.ScrollPerPixel
+            )
+            self._batch_list_widget.setUniformItemSizes(True)
+            _vbar = self._batch_list_widget.verticalScrollBar()
+            if _vbar is not None:
+                _vbar.setSingleStep(16)
         except Exception:
             pass
         v.addWidget(self._batch_list_widget)
