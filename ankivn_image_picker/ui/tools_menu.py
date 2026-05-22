@@ -13,8 +13,8 @@ from ..logging import get_logger
 
 _log = get_logger("tools_menu")
 
-#: Label displayed under the Tools menu.
-_MENU_LABEL = "AnkiVN Image Picker"
+#: Label displayed under the AnkiVN parent menu.
+_MENU_LABEL = "Image Picker - from AnkiVN with ❤️"
 
 
 def _on_tools_menu_clicked() -> None:
@@ -218,24 +218,33 @@ def _on_tools_menu_clicked() -> None:
 
 
 def install_tools_menu() -> None:
-    """Add the add-on entry to ``mw.form.menuTools``.
+    """Add the add-on entry to the shared "AnkiVN" menu.
 
-    Idempotent: re-running this function will not produce duplicate menu
-    entries because we tag the QAction on the menu and skip insertion
-    if a tagged action is already present.
+    Falls back to the standard "Tools" menu when the AnkiVN parent
+    menu can't be created (e.g. running headless during tests).
+
+    Idempotent: re-running this function will not produce duplicate
+    menu entries because we tag the QAction with a sentinel
+    ``objectName`` and skip insertion if a tagged action is already
+    present.
     """
     try:
         from aqt import mw  # type: ignore[import-not-found]
         from aqt.qt import QAction  # type: ignore[import-not-found]
     except ImportError:
         _log.debug(
-            "aqt not available; skipping Tools-menu install "
+            "aqt not available; skipping menu install "
             "(expected in test environments)."
         )
         return
 
     try:
-        menu = mw.form.menuTools
+        from .ankivn_menu import get_or_create_ankivn_menu
+
+        menu = get_or_create_ankivn_menu()
+        if menu is None:
+            # Fall back to Tools menu so the entry is still reachable.
+            menu = mw.form.menuTools
 
         # Idempotency guard
         sentinel = "ankivn_image_picker_tools_action"
@@ -248,9 +257,11 @@ def install_tools_menu() -> None:
         action.triggered.connect(_on_tools_menu_clicked)
         menu.addAction(action)
 
-        _log.info("Tools menu entry installed.")
+        _log.info(
+            "Menu entry installed under %r.", menu.title() if menu else "?"
+        )
     except Exception as exc:
-        _log.exception("Failed to install Tools menu entry: %s", exc)
+        _log.exception("Failed to install menu entry: %s", exc)
 
 
 __all__ = ["install_tools_menu"]
