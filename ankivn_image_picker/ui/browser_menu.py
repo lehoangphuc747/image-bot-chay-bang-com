@@ -254,17 +254,19 @@ def _on_batch_action(browser: Any) -> None:
             return
 
         # --- Prefetch: start searching for the first N notes immediately ---
+        # We aim to prefetch every note in the selection, not just a
+        # rolling window. The pool itself enforces a small concurrency
+        # cap (3 by default) so we don't burst the providers; tasks
+        # queue up and run as workers free up. This means the user
+        # never lands on a note that hasn't been at least scheduled
+        # for prefetching.
         import concurrent.futures
 
         prefetch_ahead = max(0, config.prefetch_notes_ahead)
-        # Pool sized so the user's prefetch-ahead setting is honoured
-        # without artificial throttling. Each prefetched note runs one
-        # provider call plus thumbnail downloads, so we want roughly
-        # 2x parallelism over ``prefetch_ahead`` to keep both kinds of
-        # I/O moving. Lower bound 2 keeps something running even when
-        # prefetch is disabled, upper bound 32 protects against
-        # ``prefetch_ahead`` being unrealistically high.
-        pool_size = max(2, min(prefetch_ahead * 2, 32))
+        # Concurrent prefetch cap. The user setting now controls how
+        # many notes are processed in parallel — total queued work
+        # always covers the full selection.
+        pool_size = max(1, min(prefetch_ahead, 8)) if prefetch_ahead > 0 else 0
 
         prefetch_pool = concurrent.futures.ThreadPoolExecutor(
             max_workers=pool_size
@@ -289,6 +291,12 @@ def _on_batch_action(browser: Any) -> None:
             "in_flight": 0,
         }
         prefetch_query_state: dict[str, str] = {}
+        # Per-query thumbnail progress: query -> (loaded, total).
+        # ``total`` is set as soon as search results land; ``loaded``
+        # ticks up as each thumbnail finishes. Reading this lets the
+        # side panel show "apple (12/30)" while the note is still
+        # warming.
+        prefetch_thumb_progress: dict[str, tuple[int, int]] = {}
         prefetch_lock = __import__("threading").Lock()
 
         def _prefetch_query(query: str) -> None:
@@ -340,12 +348,23 @@ def _on_batch_action(browser: Any) -> None:
             # Stash errors so the dialog can surface them in the status bar
             prefetch_errors[query] = errors
 
+            # Initialise thumbnail progress now that we know the total.
+            with prefetch_lock:
+                prefetch_thumb_progress[query] = (0, len(results))
+
             # Warm thumbnail cache so the dialog renders instantly
             # when the user reaches this note.
+            loaded = 0
             for result in results:
                 try:
-                    # Skip if already cached
+                    # Skip if already cached — count as already loaded
+                    # so the panel reflects "ready" sooner.
                     if deps.cache.get(result.thumbnail_url) is not None:
+                        loaded += 1
+                        with prefetch_lock:
+                            prefetch_thumb_progress[query] = (
+                                loaded, len(results)
+                            )
                         continue
                     response = deps.http.get(
                         result.thumbnail_url, cancel=cancel
@@ -358,6 +377,11 @@ def _on_batch_action(browser: Any) -> None:
                     # Failed thumbnail downloads are non-fatal — the
                     # dialog will retry when it opens.
                     pass
+                # Always advance the counter, even on failure, so the
+                # progress display doesn't stall on a flaky URL.
+                loaded += 1
+                with prefetch_lock:
+                    prefetch_thumb_progress[query] = (loaded, len(results))
 
         # Kick off prefetch for first N notes
         prefetch_futures: list = []
@@ -385,19 +409,24 @@ def _on_batch_action(browser: Any) -> None:
             prefetch_futures.append(prefetch_pool.submit(_wrapped))
 
         if prefetch_ahead > 0:
-            for i in range(min(prefetch_ahead, len(note_queries))):
-                _submit_prefetch(note_queries[i][2])
+            # Submit ALL notes for prefetch up-front. The pool's
+            # ``max_workers`` ensures only ``pool_size`` run at once;
+            # the rest sit in the executor's internal queue and start
+            # as workers free up. This guarantees every note in the
+            # batch is at least scheduled, so the user never lands on
+            # a cold note even if they jump around.
+            for q in (nq[2] for nq in note_queries):
+                _submit_prefetch(q)
 
         def _prefetch_status_snapshot() -> dict:
             """Snapshot for the dialog status bar + per-query side panel."""
             with prefetch_lock:
-                # Copy the dict so the caller can't see it mutating
-                # mid-iteration.
                 return {
                     "done": prefetch_state["done"],
                     "in_flight": prefetch_state["in_flight"],
                     "total": len(note_queries),
                     "query_states": dict(prefetch_query_state),
+                    "thumb_progress": dict(prefetch_thumb_progress),
                 }
 
         # --- Walk notes via a single reused dialog ---
@@ -417,12 +446,9 @@ def _on_batch_action(browser: Any) -> None:
                 return None
             index, nid, q, src_field, tgt_field = note_queries[seq_idx]
 
-            # Look-ahead prefetch for upcoming notes
-            if prefetch_ahead > 0:
-                for ahead in range(1, prefetch_ahead + 1):
-                    future_idx = seq_idx + ahead
-                    if future_idx < len(note_queries):
-                        _submit_prefetch(note_queries[future_idx][2])
+            # All upcoming notes are already queued by the up-front
+            # submission loop, so there's nothing extra to schedule
+            # here.
 
             try:
                 note = mw.col.get_note(nid)

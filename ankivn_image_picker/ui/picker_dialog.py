@@ -407,6 +407,10 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         # from the provider callable on each poll tick. Used by
         # ``_update_batch_list_item`` to render the ⏳/📦 markers.
         self._latest_prefetch_query_states: dict[str, str] = {}
+        # Per-query thumbnail (loaded, total) pulled from the same
+        # snapshot. Lets the side panel show progress like
+        # ``⏳ apple (12/30)`` while the note warms up.
+        self._latest_prefetch_thumb_progress: dict[str, tuple] = {}
         # Notes panel state (populated by start_batch)
         self._batch_notes_meta: list = []
         self._batch_job_factory: Optional[Any] = None
@@ -1943,6 +1947,7 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         #   ⏳ prefetching — task in flight
         #     (blank)    — not yet prefetched
         marker = " "
+        progress_suffix = ""
         if idx == self._batch_current_seq:
             marker = "▶"
         elif meta.get("status") == "skipped":
@@ -1951,17 +1956,25 @@ class PickerDialog(QDialog):  # type: ignore[misc]
             marker = "✅"
         else:
             # Look up live prefetch state for this note's query.
-            pf_state = self._latest_prefetch_query_states.get(
-                meta.get("query") or ""
-            )
+            q = meta.get("query") or ""
+            pf_state = self._latest_prefetch_query_states.get(q)
             if pf_state == "done":
                 marker = "📦"
             elif pf_state in ("running", "queued"):
                 marker = "⏳"
 
+            # Append thumbnail progress so the user sees the cell
+            # going from "⏳ apple (0/30)" → "⏳ apple (18/30)" →
+            # "📦 apple (30/30)" rather than a static spinner.
+            tp = self._latest_prefetch_thumb_progress.get(q)
+            if tp is not None:
+                loaded, total = tp
+                if total > 0:
+                    progress_suffix = f"  ({loaded}/{total})"
+
         label = meta.get("label") or meta.get("query") or "(empty)"
         try:
-            item.setText(f"{marker} {label}")
+            item.setText(f"{marker} {label}{progress_suffix}")
         except Exception:
             pass
 
@@ -2088,10 +2101,13 @@ class PickerDialog(QDialog):  # type: ignore[misc]
             status = {}
 
         new_states = status.get("query_states") or {}
-        # Diff against the previous snapshot so we only re-render rows
-        # whose state actually changed. With 100 notes this avoids a
-        # 100x setText every 250 ms.
+        new_thumbs = status.get("thumb_progress") or {}
+
+        # Diff against the previous snapshots so we only re-render rows
+        # whose state or thumbnail count actually changed. With 100
+        # notes this avoids a 100x setText every 250 ms.
         prev = self._latest_prefetch_query_states
+        prev_thumbs = self._latest_prefetch_thumb_progress
         changed_queries: set = set()
         for q, st in new_states.items():
             if prev.get(q) != st:
@@ -2099,8 +2115,12 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         for q in prev:
             if q not in new_states:
                 changed_queries.add(q)
+        for q, count in new_thumbs.items():
+            if prev_thumbs.get(q) != count:
+                changed_queries.add(q)
 
         self._latest_prefetch_query_states = new_states
+        self._latest_prefetch_thumb_progress = new_thumbs
 
         if changed_queries:
             for idx, meta in enumerate(self._batch_notes_meta):
