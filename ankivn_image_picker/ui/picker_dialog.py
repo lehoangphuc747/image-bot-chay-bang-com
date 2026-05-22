@@ -650,10 +650,23 @@ class PickerDialog(QDialog):  # type: ignore[misc]
             self._main_splitter = None
 
         if self._main_splitter is not None:
-            layout.addWidget(self._main_splitter)
+            # Stretch=1 makes the splitter (notes panel + grid)
+            # absorb all extra vertical space. Without this, Qt
+            # divides spare height evenly among siblings, leaving
+            # the grid cramped while padding accumulates above and
+            # below.
+            try:
+                layout.addWidget(self._main_splitter, 1)
+            except TypeError:
+                # Fallback for the test stub layout that doesn't
+                # accept a stretch arg.
+                layout.addWidget(self._main_splitter)
         else:
             # Test/fallback path: no splitter, just the grid
-            layout.addWidget(self._grid_widget)
+            try:
+                layout.addWidget(self._grid_widget, 1)
+            except TypeError:
+                layout.addWidget(self._grid_widget)
         # Hide the batch panel until start_batch reveals it.
         try:
             self._batch_panel.setVisible(False)
