@@ -1,8 +1,8 @@
 {
   "name": "⚡ Image Picker - Fastest Image Search & Insert (by AnkiVN)",
   "package": "ankivn_image_picker",
-  "version": "0.1.0",
-  "human_version": "0.1.0",
+  "version": "0.3.0",
+  "human_version": "0.3.0",
   "homepage": "",
   "conflicts": [],
   "min_point_version": 50,
