@@ -2609,19 +2609,34 @@ class PickerDialog(QDialog):  # type: ignore[misc]
             showWarning("No active note in the editor.")
             return None
 
+        # Resolve the effective source/target field for THIS note's
+        # note type. Per-note-type field_mappings win over the global
+        # source_field / target_field fall-back.
+        from ..config import resolve_fields
+        from dataclasses import replace as _replace
+
+        try:
+            note_type_name = note.note_type()["name"]
+        except Exception:
+            note_type_name = ""
+        src_field, tgt_field = resolve_fields(note_type_name, config)
+
         # Validate source field exists (Req 3.4)
         field_defs = note.note_type()["flds"]
         field_names = [fld["name"] for fld in field_defs]
 
-        if config.source_field not in field_names:
+        if src_field not in field_names:
             showWarning(
-                f"Source field '{config.source_field}' not found on this "
-                f"note type. Available fields: {', '.join(field_names)}"
+                f"Source field '{src_field}' not found on note type "
+                f"'{note_type_name}'.\n\n"
+                f"Available fields: {', '.join(field_names)}\n\n"
+                f"Configure a mapping under "
+                f"AnkiVN → ⚡ Image Picker Settings → Field Mappings."
             )
             return None
 
         # Read the source field value (Req 3.1)
-        field_index = field_names.index(config.source_field)
+        field_index = field_names.index(src_field)
         raw_value = note.fields[field_index]
 
         # Normalise the query (Req 3.2, 3.3)
@@ -2629,13 +2644,23 @@ class PickerDialog(QDialog):  # type: ignore[misc]
 
         # Check for empty query (Req 3.5)
         if not query:
-            tooltip("source field is empty")
+            tooltip(f"Source field '{src_field}' is empty.")
             return None
+
+        # Bake the resolved fields into the config that the dialog will
+        # use, so every downstream code-path (insert, status label,
+        # etc.) sees the per-note-type values without having to re-
+        # resolve.
+        effective_config = _replace(
+            config,
+            source_field=src_field,
+            target_field=tgt_field,
+        )
 
         # All validation passed — create and return the dialog
         dialog = PickerDialog(
             editor=editor,
-            config=config,
+            config=effective_config,
             query=query,
             providers=providers,
             http=http,

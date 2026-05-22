@@ -100,7 +100,6 @@ def _build_general_tab(parent: Any, raw_config: dict) -> tuple:
         QCheckBox,
         QFormLayout,
         QLabel,
-        QLineEdit,
         QSpinBox,
         QVBoxLayout,
         QWidget,
@@ -110,25 +109,16 @@ def _build_general_tab(parent: Any, raw_config: dict) -> tuple:
     v = QVBoxLayout(page)
 
     intro = QLabel(
-        "<b>Field mappings & batch behaviour.</b><br>"
+        "<b>Batch behaviour & translation.</b><br>"
         "<span style='color:#888; font-size:11px;'>"
-        "These apply to every search. The picker reads from "
-        "<i>source field</i> and writes the chosen image into "
-        "<i>target field</i>.</span>"
+        "Field mappings live under the <i>Field Mappings</i> tab so they can "
+        "be set per note type."
+        "</span>"
     )
     intro.setWordWrap(True)
     v.addWidget(intro)
 
     form = QFormLayout()
-
-    # Source / target field
-    src = QLineEdit(raw_config.get("source_field", "word"))
-    src.setToolTip("Field used as the search query")
-    form.addRow("Source field:", src)
-
-    tgt = QLineEdit(raw_config.get("target_field", "image"))
-    tgt.setToolTip("Field where the image is inserted")
-    form.addRow("Target field:", tgt)
 
     # Prefetch
     prefetch = QSpinBox()
@@ -157,10 +147,190 @@ def _build_general_tab(parent: Any, raw_config: dict) -> tuple:
     v.addStretch(1)
 
     return page, {
-        "source_field": lambda: src.text().strip() or "word",
-        "target_field": lambda: tgt.text().strip() or "image",
         "prefetch_notes_ahead": lambda: prefetch.value(),
         "translate_to_english": lambda: translate.isChecked(),
+    }
+
+
+def _build_field_mappings_tab(parent: Any, raw_config: dict) -> tuple:
+    """Return (widget, getters_dict) for the Field Mappings tab.
+
+    Lists every note type currently in the user's collection, lets
+    them choose source/target fields per type. A "global default"
+    section at the top covers note types not yet assigned a mapping.
+    """
+    from aqt.qt import (  # type: ignore[import-not-found]
+        QComboBox,
+        QFormLayout,
+        QFrame,
+        QGroupBox,
+        QHBoxLayout,
+        QLabel,
+        QLineEdit,
+        QScrollArea,
+        QVBoxLayout,
+        QWidget,
+    )
+
+    page = QWidget(parent)
+    v = QVBoxLayout(page)
+
+    intro = QLabel(
+        "<b>Per-note-type field mappings.</b><br>"
+        "<span style='color:#888; font-size:11px;'>"
+        "Each note type can use different source/target fields. The picker "
+        "looks up the active note's type here first, then falls back to the "
+        "global default below."
+        "</span>"
+    )
+    intro.setWordWrap(True)
+    v.addWidget(intro)
+
+    # --- Global fallback ---
+    fallback_box = QGroupBox("Global default (fallback)", page)
+    fb_form = QFormLayout(fallback_box)
+
+    src_default = QLineEdit(raw_config.get("source_field", "word"))
+    src_default.setToolTip(
+        "Used when a note's note type has no specific mapping below."
+    )
+    fb_form.addRow("Source field:", src_default)
+
+    tgt_default = QLineEdit(raw_config.get("target_field", "image"))
+    tgt_default.setToolTip(
+        "Used when a note's note type has no specific mapping below."
+    )
+    fb_form.addRow("Target field:", tgt_default)
+
+    v.addWidget(fallback_box)
+
+    # --- Per-note-type rows ---
+    per_type_box = QGroupBox("Per note type", page)
+    per_type_layout = QVBoxLayout(per_type_box)
+
+    # Discover note types + their fields. Outside Anki this returns
+    # an empty list and the tab degrades to "no note types found".
+    note_types_info: list[tuple[str, list[str]]] = []
+    try:
+        from aqt import mw  # type: ignore[import-not-found]
+
+        for nt in mw.col.models.all():
+            name = nt.get("name", "")
+            flds = [f["name"] for f in nt.get("flds", [])]
+            if name and flds:
+                note_types_info.append((name, flds))
+        note_types_info.sort(key=lambda p: p[0].lower())
+    except Exception:
+        note_types_info = []
+
+    # Existing mappings keyed by note type name for fast lookup
+    existing: dict = {}
+    for entry in raw_config.get("field_mappings", []) or []:
+        if isinstance(entry, dict):
+            nt_name = entry.get("note_type")
+            src = entry.get("source") or entry.get("source_field")
+            tgt = entry.get("target") or entry.get("target_field")
+        elif isinstance(entry, (list, tuple)) and len(entry) >= 3:
+            nt_name, src, tgt = entry[0], entry[1], entry[2]
+        else:
+            continue
+        if isinstance(nt_name, str) and nt_name:
+            existing[nt_name] = (src or "", tgt or "")
+
+    if not note_types_info:
+        per_type_layout.addWidget(
+            QLabel(
+                "<i style='color:#888;'>"
+                "No note types found in this collection. "
+                "Mappings will be available once notes exist."
+                "</i>",
+                per_type_box,
+            )
+        )
+
+    # nt_name -> (source_combo, target_combo)
+    nt_widgets: dict[str, tuple] = {}
+
+    for nt_name, fields_list in note_types_info:
+        row = QWidget(per_type_box)
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+
+        label = QLabel(f"<b>{nt_name}</b>", row)
+        label.setMinimumWidth(160)
+        h.addWidget(label)
+
+        src_combo = QComboBox(row)
+        src_combo.addItem("(use global default)", "")
+        for fn in fields_list:
+            src_combo.addItem(fn, fn)
+        h.addWidget(QLabel("→ source:", row))
+        h.addWidget(src_combo)
+
+        tgt_combo = QComboBox(row)
+        tgt_combo.addItem("(use global default)", "")
+        for fn in fields_list:
+            tgt_combo.addItem(fn, fn)
+        h.addWidget(QLabel("target:", row))
+        h.addWidget(tgt_combo)
+        h.addStretch(1)
+
+        # Pre-select existing mapping if any
+        if nt_name in existing:
+            saved_src, saved_tgt = existing[nt_name]
+            for i in range(src_combo.count()):
+                if src_combo.itemData(i) == saved_src:
+                    src_combo.setCurrentIndex(i)
+                    break
+            for i in range(tgt_combo.count()):
+                if tgt_combo.itemData(i) == saved_tgt:
+                    tgt_combo.setCurrentIndex(i)
+                    break
+        else:
+            # Auto-pick if a field with the global-default name exists
+            global_src = raw_config.get("source_field", "word")
+            global_tgt = raw_config.get("target_field", "image")
+            for i in range(src_combo.count()):
+                if src_combo.itemData(i) == global_src:
+                    src_combo.setCurrentIndex(i)
+                    break
+            for i in range(tgt_combo.count()):
+                if tgt_combo.itemData(i) == global_tgt:
+                    tgt_combo.setCurrentIndex(i)
+                    break
+
+        nt_widgets[nt_name] = (src_combo, tgt_combo)
+        per_type_layout.addWidget(row)
+
+    # Wrap per-type rows in a scroll area in case the user has many
+    # note types.
+    scroll = QScrollArea(page)
+    scroll.setWidgetResizable(True)
+    scroll.setWidget(per_type_box)
+    scroll.setMinimumHeight(220)
+    v.addWidget(scroll, 1)
+
+    def _mappings_getter() -> list:
+        out: list = []
+        for nt_name, (src_c, tgt_c) in nt_widgets.items():
+            src = src_c.currentData() or ""
+            tgt = tgt_c.currentData() or ""
+            # Both must be set + both must be non-empty + they must
+            # differ from each other to be a useful mapping. Fall
+            # back to global default otherwise.
+            if not src or not tgt or src == tgt:
+                continue
+            out.append({
+                "note_type": nt_name,
+                "source": src,
+                "target": tgt,
+            })
+        return out
+
+    return page, {
+        "source_field": lambda: src_default.text().strip() or "word",
+        "target_field": lambda: tgt_default.text().strip() or "image",
+        "field_mappings": _mappings_getter,
     }
 
 
@@ -464,12 +634,16 @@ def _on_tools_menu_clicked() -> None:
         outer.addWidget(tabs, 1)
 
         general_page, general_getters = _build_general_tab(dialog, raw_config)
+        mappings_page, mappings_getters = _build_field_mappings_tab(
+            dialog, raw_config
+        )
         providers_page, providers_getters = _build_providers_tab(dialog, raw_config)
         advanced_page, advanced_getters, reset_btn = _build_advanced_tab(
             dialog, raw_config
         )
 
         tabs.addTab(general_page, "General")
+        tabs.addTab(mappings_page, "Field Mappings")
         tabs.addTab(providers_page, "Providers")
         tabs.addTab(advanced_page, "Advanced")
 
@@ -524,7 +698,12 @@ def _on_tools_menu_clicked() -> None:
         # Merge getters from every tab into the existing config dict so
         # we don't drop keys we didn't expose.
         merged = dict(raw_config)
-        for getters in (general_getters, providers_getters, advanced_getters):
+        for getters in (
+            general_getters,
+            mappings_getters,
+            providers_getters,
+            advanced_getters,
+        ):
             for k, fn in getters.items():
                 try:
                     merged[k] = fn()

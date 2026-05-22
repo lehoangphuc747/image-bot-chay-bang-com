@@ -11,5 +11,6 @@
   "wikimedia_max_results": 50,
   "openverse_max_results": 20,
   "prefetch_notes_ahead": 8,
-  "translate_to_english": true
+  "translate_to_english": true,
+  "field_mappings": []
 }

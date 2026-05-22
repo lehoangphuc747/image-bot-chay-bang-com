@@ -32,7 +32,7 @@ import logging
 from dataclasses import dataclass, fields
 from typing import Any, ClassVar, FrozenSet, Mapping
 
-__all__ = ["Config", "ConfigLoader"]
+__all__ = ["Config", "ConfigLoader", "resolve_fields"]
 
 
 # Range bounds come straight from the design's "Data Models > Config" table
@@ -81,6 +81,28 @@ class Config:
     # Korean, Japanese, Chinese, etc. Original query is preserved if
     # translation fails.
     translate_to_english: bool = True
+    # Per-note-type field mappings. Each entry is
+    # ``(note_type_name, source_field, target_field)``. When a note's
+    # note type matches one of these entries, the mapped fields are
+    # used instead of the global ``source_field`` / ``target_field``
+    # fall-back. Stored as a tuple of tuples so the frozen dataclass
+    # can be safely shared across threads.
+    field_mappings: tuple[tuple[str, str, str], ...] = ()
+
+
+def resolve_fields(note_type_name: str, config: "Config") -> tuple[str, str]:
+    """Return ``(source_field, target_field)`` for ``note_type_name``.
+
+    Looks up ``note_type_name`` in :attr:`Config.field_mappings` first;
+    falls back to the global ``source_field`` / ``target_field`` when
+    no mapping is defined for the type. The function is total — every
+    note type, even one not yet seen, gets a usable answer.
+    """
+    if note_type_name:
+        for nt, src, tgt in config.field_mappings:
+            if nt == note_type_name:
+                return src, tgt
+    return config.source_field, config.target_field
 
 
 class ConfigLoader:
@@ -103,6 +125,7 @@ class ConfigLoader:
         openverse_max_results=0,
         prefetch_notes_ahead=8,
         translate_to_english=True,
+        field_mappings=(),
     )
 
     # The set of keys the add-on understands. Computed from ``Config``'s
@@ -225,6 +248,10 @@ class ConfigLoader:
                 raw_map.get("translate_to_english"),
                 defaults.translate_to_english,
             ),
+            field_mappings=_coerce_field_mappings(
+                raw_map.get("field_mappings"),
+                defaults.field_mappings,
+            ),
         )
 
 
@@ -305,5 +332,57 @@ def _coerce_providers(
         item for item in value if isinstance(item, str) and item != ""
     ]
     if not cleaned:
+        return default
+    return tuple(cleaned)
+
+
+def _coerce_field_mappings(
+    value: Any,
+    default: tuple[tuple[str, str, str], ...],
+) -> tuple[tuple[str, str, str], ...]:
+    """Return a tuple of validated ``(note_type, source, target)`` triples.
+
+    Accepts two on-disk shapes for backwards/UX flexibility:
+
+    * a list of dicts ``[{"note_type": ..., "source": ..., "target": ...}, ...]``
+      — preferred, easier to read in JSON
+    * a list of ``[note_type, source, target]`` lists/tuples — also valid
+
+    Entries with missing or non-string keys are silently dropped; if the
+    whole list is unrecognisable, ``default`` is returned. Duplicate
+    note-type entries are kept in original order so the first match wins
+    in :func:`resolve_fields`.
+    """
+
+    if value is None:
+        return default
+    if not isinstance(value, (list, tuple)):
+        return default
+
+    cleaned: list[tuple[str, str, str]] = []
+    for entry in value:
+        nt: Any = None
+        src: Any = None
+        tgt: Any = None
+        if isinstance(entry, Mapping):
+            nt = entry.get("note_type")
+            src = entry.get("source") or entry.get("source_field")
+            tgt = entry.get("target") or entry.get("target_field")
+        elif isinstance(entry, (list, tuple)) and len(entry) >= 3:
+            nt, src, tgt = entry[0], entry[1], entry[2]
+        else:
+            continue
+        if not (
+            isinstance(nt, str) and nt
+            and isinstance(src, str) and src
+            and isinstance(tgt, str) and tgt
+        ):
+            continue
+        cleaned.append((nt, src, tgt))
+
+    if not cleaned and value:
+        # The user supplied a list but nothing in it parsed. Keep the
+        # default rather than silently dropping their config to ()
+        # which would look like "no mappings configured".
         return default
     return tuple(cleaned)

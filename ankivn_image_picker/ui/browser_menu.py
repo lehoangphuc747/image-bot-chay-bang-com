@@ -95,6 +95,7 @@ def _on_batch_action(browser: Any) -> None:
 
         # --- Show field selection dialog ---
         from aqt.qt import (  # type: ignore[import-not-found]
+            QCheckBox,
             QComboBox,
             QDialog,
             QDialogButtonBox,
@@ -115,6 +116,28 @@ def _on_batch_action(browser: Any) -> None:
         )
         header.setWordWrap(True)
         dlg_layout.addWidget(header)
+
+        # Per-note-type field-mapping toggle. When the user has saved
+        # mappings under Settings → Field Mappings, those win over the
+        # per-batch combo boxes below. Box stays enabled in either
+        # case so the user can override on the fly.
+        from ..config import resolve_fields as _resolve_fields
+
+        mappings_count = len(getattr(deps.config, "field_mappings", ()) or ())
+        use_mappings_check = QCheckBox(
+            f"Use per-note-type mappings from Settings ({mappings_count} configured)",
+            field_dialog,
+        )
+        use_mappings_check.setChecked(mappings_count > 0)
+        use_mappings_check.setToolTip(
+            "When checked, each note uses the source/target field\n"
+            "configured for its note type in Settings → Field Mappings.\n"
+            "Notes whose type has no mapping fall back to the global\n"
+            "default (or the dropdowns below if you uncheck this).\n"
+            "When unchecked, every note uses the dropdowns below — "
+            "useful when the entire selection shares one note type."
+        )
+        dlg_layout.addWidget(use_mappings_check)
 
         form = QFormLayout()
 
@@ -149,8 +172,9 @@ def _on_batch_action(browser: Any) -> None:
         # Use the user-chosen fields for this batch run
         batch_source_field = source_combo.currentText()
         batch_target_field = target_combo.currentText()
+        use_mappings = bool(use_mappings_check.isChecked())
 
-        if batch_source_field == batch_target_field:
+        if not use_mappings and batch_source_field == batch_target_field:
             showInfo("Source and target fields cannot be the same.")
             return
 
@@ -163,7 +187,11 @@ def _on_batch_action(browser: Any) -> None:
 
         # Pre-compute queries for all notes so we can prefetch.
         config = deps.config
-        note_queries: list[tuple[int, Any, str]] = []  # (index, nid, query)
+        # ``note_queries`` carries the per-note effective source/target
+        # so that per-note-type mappings can be applied without
+        # re-resolving in every downstream code-path.
+        note_queries: list[tuple[int, Any, str, str, str]] = []
+        # (index, nid, query, src_field, tgt_field)
         # Per-note metadata for the dialog's left-side notes panel.
         # Same order as note_queries; one dict per kept note.
         notes_meta: list[dict] = []
@@ -177,24 +205,37 @@ def _on_batch_action(browser: Any) -> None:
 
             field_defs = note.note_type()["flds"]
             field_names = [fld["name"] for fld in field_defs]
-            if batch_source_field not in field_names:
+
+            # Resolve per-note effective fields. When the user enabled
+            # per-note-type mappings we look them up here; otherwise
+            # fall back to whatever the user picked in the dropdowns.
+            if use_mappings:
+                try:
+                    nt_name = note.note_type()["name"]
+                except Exception:
+                    nt_name = ""
+                src_field, tgt_field = _resolve_fields(nt_name, config)
+            else:
+                src_field, tgt_field = batch_source_field, batch_target_field
+
+            if src_field not in field_names:
                 skipped += 1
                 continue
-            field_index = field_names.index(batch_source_field)
+            field_index = field_names.index(src_field)
             raw_value = note.fields[field_index]
             query = normalize_query(raw_value)
             if not query:
                 skipped += 1
                 continue
-            note_queries.append((index, nid, query))
+            note_queries.append((index, nid, query, src_field, tgt_field))
 
             # Detect whether the target field already contains an
             # image. This is a cheap substring check: anything Anki
             # has rendered will contain an <img> tag.
             has_image = False
             try:
-                if batch_target_field in field_names:
-                    tgt_idx = field_names.index(batch_target_field)
+                if tgt_field in field_names:
+                    tgt_idx = field_names.index(tgt_field)
                     tgt_value = note.fields[tgt_idx] or ""
                     has_image = "<img" in tgt_value.lower()
             except Exception:
@@ -356,7 +397,7 @@ def _on_batch_action(browser: Any) -> None:
         def _build_job_for(seq_idx: int) -> Optional[dict]:
             if seq_idx >= len(note_queries):
                 return None
-            index, nid, q = note_queries[seq_idx]
+            index, nid, q, src_field, tgt_field = note_queries[seq_idx]
 
             # Look-ahead prefetch for upcoming notes
             if prefetch_ahead > 0:
@@ -401,8 +442,8 @@ def _on_batch_action(browser: Any) -> None:
             return {
                 "editor": shim,
                 "query": q,
-                "source_field": batch_source_field,
-                "target_field": batch_target_field,
+                "source_field": src_field,
+                "target_field": tgt_field,
                 "position": (index, len(nids)),
                 "prefetched_results": prefetched_results,
                 "prefetched_errors": prefetched_errs,
