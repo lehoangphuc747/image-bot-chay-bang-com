@@ -711,6 +711,24 @@ class PickerDialog(QDialog):  # type: ignore[misc]
             self._skip_button.clicked.connect(self._on_skip_clicked)
             bottom_layout.addWidget(self._skip_button)
 
+            # Skip-with-images button: jumps over every upcoming note
+            # whose target field already contains an <img> tag, until
+            # the dialog lands on a note that still needs an image
+            # (or the queue is exhausted). Hidden until batch mode.
+            self._skip_with_images_button = QPushButton(
+                "Skip notes with images ⏩", self
+            )
+            self._skip_with_images_button.setToolTip(
+                "Skip every upcoming note whose target field already\n"
+                "contains an image. Useful for resuming a batch where\n"
+                "you've already processed some cards."
+            )
+            self._skip_with_images_button.clicked.connect(
+                self._on_skip_with_images_clicked
+            )
+            self._skip_with_images_button.setVisible(False)
+            bottom_layout.addWidget(self._skip_with_images_button)
+
             # Load More button to fetch next page from all providers
             self._load_more_button = QPushButton("Load More 🔄", self)
             self._load_more_button.setToolTip(
@@ -770,6 +788,7 @@ class PickerDialog(QDialog):  # type: ignore[misc]
             self._attribution_checkbox = None
             self._auto_scroll_checkbox = None
             self._translate_checkbox = None
+            self._skip_with_images_button = None
             pass  # Test environment without aqt
 
         # Provider status bar (Req 4.5 error indicators)
@@ -1789,6 +1808,13 @@ class PickerDialog(QDialog):  # type: ignore[misc]
             except Exception:
                 pass
 
+            # Show the batch-only "skip notes with images" shortcut.
+            try:
+                if self._skip_with_images_button is not None:
+                    self._skip_with_images_button.setVisible(True)
+            except Exception:
+                pass
+
             # Restore the splitter sizes the user picked last time,
             # otherwise pick a sensible default that leaves the grid
             # plenty of room.
@@ -2029,6 +2055,67 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         """Persist the auto-search toggle for the next batch session."""
         global _REMEMBERED_AUTO_SEARCH
         _REMEMBERED_AUTO_SEARCH = bool(checked)
+
+    def _on_skip_with_images_clicked(self) -> None:
+        """Skip every upcoming note whose target field already has an image.
+
+        Walks forward through the queue from the current position,
+        advancing past any note flagged with ``has_image=True`` in
+        the meta list. Stops at the first note that still needs an
+        image, or at the end of the queue (in which case the dialog
+        accepts itself like a normal batch finish).
+        """
+        if not self._batch_mode:
+            return
+
+        skipped_count = 0
+        # Walk the meta list rather than calling _advance_batch in a
+        # loop. _advance_batch triggers a full search/swap on every
+        # call, which would be wasteful when our intent is just to
+        # fast-forward over already-completed notes. We do still need
+        # to call it once at the end to actually move the dialog onto
+        # the first un-imaged note.
+        target_seq = self._batch_current_seq
+        for seq in range(self._batch_current_seq + 1, len(self._batch_notes_meta)):
+            meta = self._batch_notes_meta[seq]
+            if meta.get("has_image") or meta.get("status") == "chosen":
+                # Tag in meta so the side panel reflects the skip
+                if meta.get("status") is None:
+                    meta["status"] = "skipped"
+                self._update_batch_list_item(seq)
+                skipped_count += 1
+                target_seq = seq
+            else:
+                # Found an unimaged note — advance lands here.
+                break
+        else:
+            # No unimaged note remained: ``target_seq`` will be the
+            # last skipped one, and _advance_batch() is responsible
+            # for accepting the dialog when the queue is exhausted.
+            target_seq = len(self._batch_notes_meta) - 1
+
+        if skipped_count == 0:
+            try:
+                tooltip("No upcoming notes already have images.")
+            except Exception:
+                pass
+            return
+
+        # Bring the dialog's pointer to the last skipped seq so the
+        # next _advance_batch call lands on (target_seq + 1), which
+        # is the first un-imaged note (or past-the-end → accept()).
+        self._batch_current_seq = target_seq
+        try:
+            tooltip(f"Skipped {skipped_count} note(s) that already have images.")
+        except Exception:
+            pass
+
+        # If the next provider has a job ready, swap into it; if not,
+        # the queue is exhausted and _advance_batch will accept().
+        # We don't update batch_outcomes["skipped"] here because these
+        # notes weren't actively skipped by the user — they simply
+        # already had images. Counting them would distort the summary.
+        self._advance_batch()
 
     def _on_splitter_moved(self, pos: int, index: int) -> None:
         """Persist splitter sizes after the user drags the divider."""
