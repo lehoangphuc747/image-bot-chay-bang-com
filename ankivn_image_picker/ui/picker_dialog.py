@@ -2043,7 +2043,14 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         except Exception:
             pass
 
-        if auto_search:
+        # If results are already prefetched, swap into them
+        # immediately regardless of the auto-search toggle. The toggle
+        # is meant to control whether clicking a *cold* note triggers
+        # a fresh network search; for a note that's already 📦 ready,
+        # not loading would defeat the point of the marker.
+        has_prefetch = bool(job.get("prefetched_results"))
+
+        if auto_search or has_prefetch:
             # Full swap: load prefetched results and search
             self._set_batch_current(seq_idx)
             self.swap_to_query(
