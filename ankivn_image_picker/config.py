@@ -242,10 +242,8 @@ class ConfigLoader:
                 _MAX_RESULTS_MAX,
                 defaults.openverse_max_results,
             ),
-            prefetch_notes_ahead=_coerce_int_in_range(
+            prefetch_notes_ahead=_clamp_prefetch(
                 raw_map.get("prefetch_notes_ahead"),
-                0,  # 0 = disable prefetch
-                20,  # max 20 to avoid blowing up rate limits
                 defaults.prefetch_notes_ahead,
             ),
             translate_to_english=_coerce_bool(
@@ -390,3 +388,30 @@ def _coerce_field_mappings(
         # which would look like "no mappings configured".
         return default
     return tuple(cleaned)
+
+
+
+# Hard cap on prefetch concurrency. Even when the user has an old
+# config explicitly setting a higher number, we clamp downward —
+# higher values blow through provider rate limits and rarely improve
+# the user-perceived speed because users pick notes sequentially. The
+# UI no longer surfaces this knob; only ``0`` (disabled) is honoured
+# verbatim so power users can opt out of prefetching.
+_PREFETCH_HARD_CAP: int = 3
+
+
+def _clamp_prefetch(value: Any, default: int) -> int:
+    """Coerce ``value`` to an int and clamp it to ``[0, _PREFETCH_HARD_CAP]``.
+
+    * Non-int / out-of-range / missing values fall back to ``default``.
+    * ``0`` is preserved (disables prefetch entirely).
+    * Anything ``> _PREFETCH_HARD_CAP`` is silently clamped down to
+      the cap so older configs don't keep an unsafe value forever.
+    """
+    if not isinstance(value, int) or isinstance(value, bool):
+        return default
+    if value < 0:
+        return default
+    if value == 0:
+        return 0
+    return min(value, _PREFETCH_HARD_CAP)
