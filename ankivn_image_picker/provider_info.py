@@ -21,6 +21,9 @@ class ProviderInfo:
     default_limit: int
     requires_api_key: bool
     free_tier_note: str
+    #: Optional URL where the user can sign up for an API key. Empty
+    #: for providers that don't need one (Wikimedia, Openverse).
+    signup_url: str = ""
 
 
 # Hard limits enforced by each provider's API
@@ -32,6 +35,7 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
         default_limit=30,
         requires_api_key=True,
         free_tier_note="50 requests/hour (demo)",
+        signup_url="https://unsplash.com/developers",
     ),
     "pexels": ProviderInfo(
         id="pexels",
@@ -40,6 +44,7 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
         default_limit=80,
         requires_api_key=True,
         free_tier_note="200 requests/hour",
+        signup_url="https://www.pexels.com/api/",
     ),
     "wikimedia": ProviderInfo(
         id="wikimedia",
