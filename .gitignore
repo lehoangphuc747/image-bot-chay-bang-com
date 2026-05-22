@@ -4,6 +4,7 @@ __pycache__/
 .kiro/
 .hypothesis/
 user_files/thumbnail_cache/
+user_files/search_cache/
 *.egg-info/
 dist/
 build/
