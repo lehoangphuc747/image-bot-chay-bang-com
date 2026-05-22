@@ -100,7 +100,6 @@ def _build_general_tab(parent: Any, raw_config: dict) -> tuple:
         QCheckBox,
         QFormLayout,
         QLabel,
-        QSpinBox,
         QVBoxLayout,
         QWidget,
     )
@@ -109,30 +108,16 @@ def _build_general_tab(parent: Any, raw_config: dict) -> tuple:
     v = QVBoxLayout(page)
 
     intro = QLabel(
-        "<b>Batch behaviour & translation.</b><br>"
+        "<b>Translation & general behaviour.</b><br>"
         "<span style='color:#888; font-size:11px;'>"
-        "Field mappings live under the <i>Field Mappings</i> tab so they can "
-        "be set per note type."
+        "Field mappings live under <i>Field Mappings</i>. Prefetch is "
+        "automatic — see the side panel during batch mode for live status."
         "</span>"
     )
     intro.setWordWrap(True)
     v.addWidget(intro)
 
     form = QFormLayout()
-
-    # Prefetch
-    prefetch = QSpinBox()
-    prefetch.setRange(0, 20)
-    prefetch.setValue(int(raw_config.get("prefetch_notes_ahead", 8)))
-    prefetch.setSpecialValueText("Disabled")
-    prefetch.setSuffix(" notes")
-    prefetch.setToolTip(
-        "How many upcoming notes to search ahead in batch mode.\n"
-        "Higher = less waiting between notes, more API requests upfront.\n"
-        "Set to 0 to disable prefetching.\n"
-        "Recommended: 8"
-    )
-    form.addRow("Prefetch ahead (batch mode):", prefetch)
 
     # Translate-to-English
     translate = QCheckBox("Auto-translate non-English queries to English")
@@ -147,7 +132,6 @@ def _build_general_tab(parent: Any, raw_config: dict) -> tuple:
     v.addStretch(1)
 
     return page, {
-        "prefetch_notes_ahead": lambda: prefetch.value(),
         "translate_to_english": lambda: translate.isChecked(),
     }
 

@@ -277,14 +277,18 @@ def _on_batch_action(browser: Any) -> None:
         prefetch_errors: dict[str, dict[str, str]] = {}  # query -> {provider_id -> error}
         prefetch_translations: dict[str, str] = {}  # original_query -> translated_query
 
-        # Live counters for the dialog status bar.
-        # ``prefetch_seen`` tracks queries already submitted (to dedupe);
-        # ``prefetch_in_flight`` is decremented when a task finishes.
+        # Live counters for the dialog status bar + per-query state
+        # for the side panel. Each query in ``prefetch_query_state``
+        # is one of:
+        #   "queued"   — submitted but not started yet
+        #   "running"  — worker has started fetching
+        #   "done"     — results landed in prefetch_cache
         prefetch_seen: set[str] = set()
         prefetch_state: dict[str, int] = {
             "done": 0,
             "in_flight": 0,
         }
+        prefetch_query_state: dict[str, str] = {}
         prefetch_lock = __import__("threading").Lock()
 
         def _prefetch_query(query: str) -> None:
@@ -365,14 +369,18 @@ def _on_batch_action(browser: Any) -> None:
                     return
                 prefetch_seen.add(q)
                 prefetch_state["in_flight"] += 1
+                prefetch_query_state[q] = "queued"
 
             def _wrapped() -> None:
+                with prefetch_lock:
+                    prefetch_query_state[q] = "running"
                 try:
                     _prefetch_query(q)
                 finally:
                     with prefetch_lock:
                         prefetch_state["in_flight"] -= 1
                         prefetch_state["done"] += 1
+                        prefetch_query_state[q] = "done"
 
             prefetch_futures.append(prefetch_pool.submit(_wrapped))
 
@@ -381,12 +389,15 @@ def _on_batch_action(browser: Any) -> None:
                 _submit_prefetch(note_queries[i][2])
 
         def _prefetch_status_snapshot() -> dict:
-            """Snapshot for the dialog status bar."""
+            """Snapshot for the dialog status bar + per-query side panel."""
             with prefetch_lock:
+                # Copy the dict so the caller can't see it mutating
+                # mid-iteration.
                 return {
                     "done": prefetch_state["done"],
                     "in_flight": prefetch_state["in_flight"],
                     "total": len(note_queries),
+                    "query_states": dict(prefetch_query_state),
                 }
 
         # --- Walk notes via a single reused dialog ---
@@ -445,6 +456,10 @@ def _on_batch_action(browser: Any) -> None:
                 prefetch_translations.pop(q)
                 if q in prefetch_translations else None
             )
+            # Mark this query as consumed so the side-panel marker
+            # transitions from 📦 (cached) to ▶ (active) cleanly.
+            with prefetch_lock:
+                prefetch_query_state[q] = "consumed"
 
             return {
                 "editor": shim,

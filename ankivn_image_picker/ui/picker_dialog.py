@@ -403,6 +403,10 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         # bar to show how many notes have been prefetched ahead.
         self._batch_prefetch_status: Optional[Any] = None
         self._prefetch_poll_timer: Optional[Any] = None
+        # Snapshot of the most recent per-query prefetch state, mirrored
+        # from the provider callable on each poll tick. Used by
+        # ``_update_batch_list_item`` to render the ⏳/📦 markers.
+        self._latest_prefetch_query_states: dict[str, str] = {}
         # Notes panel state (populated by start_batch)
         self._batch_notes_meta: list = []
         self._batch_job_factory: Optional[Any] = None
@@ -876,7 +880,7 @@ class PickerDialog(QDialog):  # type: ignore[misc]
 
         # Help label below the list
         self._batch_help_label = QLabel(
-            "✅ has image · ▶ active · ⏭ skipped",
+            "▶ active · ✅ done · ⏭ skipped · 📦 ready · ⏳ prefetching",
             panel,
         )
         try:
@@ -1875,7 +1879,7 @@ class PickerDialog(QDialog):  # type: ignore[misc]
                 self._prefetch_poll_timer = QTimer(self)
                 self._prefetch_poll_timer.setInterval(250)
                 self._prefetch_poll_timer.timeout.connect(
-                    self._update_status_bar
+                    self._on_prefetch_poll_tick
                 )
                 self._prefetch_poll_timer.start()
             except Exception:
@@ -1931,6 +1935,13 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         if item is None:
             return
 
+        # Marker priority (highest first):
+        #   ▶ active     — overrides everything
+        #   ⏭ skipped    — final state
+        #   ✅ has image — final state (already had OR just chose)
+        #   📦 cached    — prefetch finished, ready to swap instantly
+        #   ⏳ prefetching — task in flight
+        #     (blank)    — not yet prefetched
         marker = " "
         if idx == self._batch_current_seq:
             marker = "▶"
@@ -1938,6 +1949,15 @@ class PickerDialog(QDialog):  # type: ignore[misc]
             marker = "⏭"
         elif meta.get("has_image") or meta.get("status") == "chosen":
             marker = "✅"
+        else:
+            # Look up live prefetch state for this note's query.
+            pf_state = self._latest_prefetch_query_states.get(
+                meta.get("query") or ""
+            )
+            if pf_state == "done":
+                marker = "📦"
+            elif pf_state in ("running", "queued"):
+                marker = "⏳"
 
         label = meta.get("label") or meta.get("query") or "(empty)"
         try:
@@ -2050,6 +2070,44 @@ class PickerDialog(QDialog):  # type: ignore[misc]
                 )
             except Exception:
                 pass
+
+    def _on_prefetch_poll_tick(self) -> None:
+        """Handle one tick of the prefetch poll timer.
+
+        Mirrors the provider's per-query state into
+        ``_latest_prefetch_query_states`` and refreshes any list rows
+        whose marker may have changed (queued/running → done, etc).
+        Status bar is updated unconditionally — its costs are
+        negligible since it only sets a single label's text.
+        """
+        if self._batch_prefetch_status is None:
+            return
+        try:
+            status = self._batch_prefetch_status() or {}
+        except Exception:
+            status = {}
+
+        new_states = status.get("query_states") or {}
+        # Diff against the previous snapshot so we only re-render rows
+        # whose state actually changed. With 100 notes this avoids a
+        # 100x setText every 250 ms.
+        prev = self._latest_prefetch_query_states
+        changed_queries: set = set()
+        for q, st in new_states.items():
+            if prev.get(q) != st:
+                changed_queries.add(q)
+        for q in prev:
+            if q not in new_states:
+                changed_queries.add(q)
+
+        self._latest_prefetch_query_states = new_states
+
+        if changed_queries:
+            for idx, meta in enumerate(self._batch_notes_meta):
+                if (meta.get("query") or "") in changed_queries:
+                    self._update_batch_list_item(idx)
+
+        self._update_status_bar()
 
     def _on_auto_search_toggled(self, checked: bool) -> None:
         """Persist the auto-search toggle for the next batch session."""

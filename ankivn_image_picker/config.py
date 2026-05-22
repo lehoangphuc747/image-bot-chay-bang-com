@@ -74,8 +74,12 @@ class Config:
     pexels_max_results: int = 0
     wikimedia_max_results: int = 0
     openverse_max_results: int = 0
-    # Number of notes to prefetch ahead in batch mode (0 = disabled)
-    prefetch_notes_ahead: int = 8
+    # Number of notes to prefetch ahead in batch mode (0 = disabled).
+    # 3 is a sweet spot: enough parallelism to mask network latency
+    # for the next couple of notes the user will visit, low enough to
+    # not blow through provider rate limits or overwhelm a slow link.
+    # Power users can override via raw config.json.
+    prefetch_notes_ahead: int = 3
     # When True, auto-translate non-English queries to English using
     # Google Translate's free endpoint. Improves results for Vietnamese,
     # Korean, Japanese, Chinese, etc. Original query is preserved if
@@ -123,7 +127,7 @@ class ConfigLoader:
         pexels_max_results=0,
         wikimedia_max_results=0,
         openverse_max_results=0,
-        prefetch_notes_ahead=8,
+        prefetch_notes_ahead=3,
         translate_to_english=True,
         field_mappings=(),
     )
