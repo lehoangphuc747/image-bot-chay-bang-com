@@ -1,0 +1,15 @@
+{
+  "source_field": "word",
+  "target_field": "image",
+  "providers": ["unsplash", "pexels", "wikimedia", "openverse"],
+  "max_results_per_provider": 30,
+  "thumbnail_cache_max_mb": 64,
+  "unsplash_access_key": "",
+  "pexels_api_key": "",
+  "unsplash_max_results": 30,
+  "pexels_max_results": 80,
+  "wikimedia_max_results": 50,
+  "openverse_max_results": 20,
+  "prefetch_notes_ahead": 5,
+  "translate_to_english": true
+}

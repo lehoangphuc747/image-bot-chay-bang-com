@@ -1,0 +1,3 @@
+[tool.pytest.ini_options]
+norecursedirs = [".git", ".hypothesis", "__pycache__", "anki-references"]
+pythonpath = ["."]

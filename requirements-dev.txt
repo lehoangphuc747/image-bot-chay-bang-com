@@ -1,0 +1,8 @@
+# Development-only dependencies for the AnkiVN Smart Image Picker add-on.
+# These are not bundled into the released add-on; they are used by the test
+# suite under ./tests/.
+
+hypothesis==6.115.6
+pytest==8.3.4
+pytest-qt==4.4.0
+responses==0.25.3
