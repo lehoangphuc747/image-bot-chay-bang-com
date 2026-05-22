@@ -413,6 +413,11 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         # snapshot. Lets the side panel show progress like
         # ``⏳ apple (12/30)`` while the note warms up.
         self._latest_prefetch_thumb_progress: dict[str, tuple] = {}
+        # When the user clicks a note that's mid-prefetch we park the
+        # job here. The poll tick swaps it in once prefetch finishes,
+        # avoiding a duplicate live search and giving the user the
+        # "click → results appear" experience they expect.
+        self._pending_prefetch_job: Optional[dict] = None
         # Notes panel state (populated by start_batch)
         self._batch_notes_meta: list = []
         self._batch_job_factory: Optional[Any] = None
@@ -2036,6 +2041,11 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         if job is None:
             return
 
+        # User clicked a different note — discard any parked pending
+        # swap so it doesn't fire later and overwrite the current
+        # view.
+        self._pending_prefetch_job = None
+
         auto_search = bool(_REMEMBERED_AUTO_SEARCH)
         try:
             if self._auto_search_checkbox is not None:
@@ -2050,7 +2060,18 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         # not loading would defeat the point of the marker.
         has_prefetch = bool(job.get("prefetched_results"))
 
-        if auto_search or has_prefetch:
+        # If the note is mid-prefetch (⏳), don't kick off a duplicate
+        # search and don't leave the user staring at a blank panel.
+        # Park the swap; the poll tick will pick it up the moment
+        # prefetch finishes.
+        prefetch_state = self._latest_prefetch_query_states.get(
+            job.get("query") or ""
+        )
+        is_prefetching = (
+            not has_prefetch and prefetch_state in ("queued", "running")
+        )
+
+        if has_prefetch or auto_search:
             # Full swap: load prefetched results and search
             self._set_batch_current(seq_idx)
             self.swap_to_query(
@@ -2063,6 +2084,39 @@ class PickerDialog(QDialog):  # type: ignore[misc]
                 prefetched_errors=job.get("prefetched_errors"),
                 prefetched_translation=job.get("prefetched_translation"),
             )
+        elif is_prefetching:
+            # Note is mid-prefetch. Swap into it (so the user sees
+            # title + notes panel update) but don't fire a duplicate
+            # search. Stash the job; the poll tick will swap in the
+            # results once the in-flight prefetch finishes.
+            self._set_batch_current(seq_idx)
+            self._reset_state_for_swap()
+            from dataclasses import replace as _replace
+            self._editor = job["editor"]
+            self._config = _replace(
+                self._config,
+                source_field=job["source_field"],
+                target_field=job["target_field"],
+            )
+            self._query = job["query"]
+            self._effective_query = job["query"]
+            try:
+                self._source_label.setText(
+                    f"<b>{job['source_field']}</b>: <i>{job['query']}</i>"
+                )
+                self.setWindowTitle(
+                    f"⚡ Image Picker · Batch [{job['position'][0]}/"
+                    f"{job['position'][1]}] · {job['query']}"
+                )
+                self._search_input.blockSignals(True)
+                self._search_input.setText(job["query"])
+                self._search_input.blockSignals(False)
+                self._grid_label.setText(
+                    "⏳ Prefetching this note — results will appear shortly…"
+                )
+            except Exception:
+                pass
+            self._pending_prefetch_job = job
         else:
             # Lightweight swap: change context only, don't search.
             # User can edit query and click Search when ready.
@@ -2137,7 +2191,60 @@ class PickerDialog(QDialog):  # type: ignore[misc]
                 if (meta.get("query") or "") in changed_queries:
                     self._update_batch_list_item(idx)
 
+        # If the user clicked into a mid-prefetch note and we parked
+        # the job, swap in the results as soon as the prefetch task
+        # transitions to "done".
+        pending = self._pending_prefetch_job
+        if pending is not None:
+            pending_q = pending.get("query") or ""
+            if new_states.get(pending_q) == "done":
+                self._pending_prefetch_job = None
+                self._load_pending_prefetch(pending)
+
         self._update_status_bar()
+
+    def _load_pending_prefetch(self, pending: dict) -> None:
+        """Swap a parked-pending note in once its prefetch has landed.
+
+        We re-call the job factory rather than reusing ``pending``
+        directly so the freshly-cached ``prefetched_results`` get
+        popped from ``prefetch_cache`` (the factory does that pop
+        internally). If the user has navigated away in the meantime,
+        skip the swap.
+        """
+        if not self._batch_mode or self._batch_job_factory is None:
+            return
+        # Find the seq index that matches this pending job. We can't
+        # store it on ``pending`` because the user may have jumped
+        # back and forth; meta order is the source of truth.
+        seq_idx: Optional[int] = None
+        for idx, meta in enumerate(self._batch_notes_meta):
+            if (meta.get("query") or "") == (pending.get("query") or ""):
+                seq_idx = idx
+                break
+        if seq_idx is None or seq_idx != self._batch_current_seq:
+            # User clicked another note already — don't disturb their
+            # current view.
+            return
+
+        try:
+            fresh_job = self._batch_job_factory(seq_idx)
+        except Exception as exc:
+            _log.exception("Job factory raised on pending swap: %s", exc)
+            return
+        if fresh_job is None:
+            return
+
+        self.swap_to_query(
+            editor=fresh_job["editor"],
+            query=fresh_job["query"],
+            source_field=fresh_job["source_field"],
+            target_field=fresh_job["target_field"],
+            position=fresh_job["position"],
+            prefetched_results=fresh_job.get("prefetched_results"),
+            prefetched_errors=fresh_job.get("prefetched_errors"),
+            prefetched_translation=fresh_job.get("prefetched_translation"),
+        )
 
     def _on_auto_search_toggled(self, checked: bool) -> None:
         """Persist the auto-search toggle for the next batch session."""
