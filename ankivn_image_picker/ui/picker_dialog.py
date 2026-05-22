@@ -58,6 +58,7 @@ try:
         QListWidgetItem,
         QPixmap,
         QSize,
+        QSplitter,
         QVBoxLayout,
         QWidget,
         Qt,
@@ -94,6 +95,22 @@ except Exception:  # pragma: no cover - shim for tests without Qt
 
     class QWidget:  # type: ignore[no-redef]
         pass
+
+    class QSplitter:  # type: ignore[no-redef]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def addWidget(self, w: Any) -> None:
+            pass
+
+        def setStretchFactor(self, *args: Any) -> None:
+            pass
+
+        def setSizes(self, *args: Any) -> None:
+            pass
+
+        def setChildrenCollapsible(self, *args: Any) -> None:
+            pass
 
     class QVBoxLayout:  # type: ignore[no-redef]
         def __init__(self, parent: Any = None) -> None:
@@ -286,6 +303,9 @@ _REMEMBERED_MAXIMIZED: bool = False
 _REMEMBERED_AUTO_SCROLL: bool = True
 _REMEMBERED_INCLUDE_ATTRIBUTION: bool = True
 _REMEMBERED_TRANSLATE: Optional[bool] = None  # None = use config default
+# Click-note-to-search toggle in batch mode (default off — let the
+# user opt in to auto-search when navigating the notes list)
+_REMEMBERED_AUTO_SEARCH: bool = False
 # Persisted sort mode ("mixed" or "grouped")
 _REMEMBERED_SORT_MODE: str = "mixed"
 
@@ -380,6 +400,10 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         # bar to show how many notes have been prefetched ahead.
         self._batch_prefetch_status: Optional[Any] = None
         self._prefetch_poll_timer: Optional[Any] = None
+        # Notes panel state (populated by start_batch)
+        self._batch_notes_meta: list = []
+        self._batch_job_factory: Optional[Any] = None
+        self._batch_current_seq: int = 0
 
         # Round-robin buffers: per-provider queues for interleaved display.
         # Two-stage pipeline:
@@ -599,7 +623,35 @@ class PickerDialog(QDialog):  # type: ignore[misc]
             QListWidget.SelectionMode.SingleSelection
         )
         self._grid_widget.itemDoubleClicked.connect(self._on_item_double_clicked)
-        layout.addWidget(self._grid_widget)
+
+        # Wrap the grid in a horizontal splitter so batch mode can
+        # show a notes-panel on the left without changing the layout
+        # for single-note (no-batch) usage. The notes panel widget is
+        # created hidden; ``start_batch`` populates and reveals it.
+        self._batch_panel = self._build_batch_panel()
+        try:
+            from aqt.qt import Qt as _Qt  # type: ignore[import-not-found]
+            self._main_splitter = QSplitter(_Qt.Orientation.Horizontal, self)
+            self._main_splitter.addWidget(self._batch_panel)
+            self._main_splitter.addWidget(self._grid_widget)
+            # Notes panel narrower by default; grid takes the rest.
+            self._main_splitter.setStretchFactor(0, 0)
+            self._main_splitter.setStretchFactor(1, 1)
+            self._main_splitter.setSizes([220, 700])
+            self._main_splitter.setChildrenCollapsible(True)
+        except Exception:
+            self._main_splitter = None
+
+        if self._main_splitter is not None:
+            layout.addWidget(self._main_splitter)
+        else:
+            # Test/fallback path: no splitter, just the grid
+            layout.addWidget(self._grid_widget)
+        # Hide the batch panel until start_batch reveals it.
+        try:
+            self._batch_panel.setVisible(False)
+        except Exception:
+            pass
 
         # Status label (shows "Searching..." / result count / errors)
         self._grid_label = QLabel("Searching...", self)
@@ -690,6 +742,82 @@ class PickerDialog(QDialog):  # type: ignore[misc]
                 scroll_bar.valueChanged.connect(self._on_scroll)
         except Exception:
             pass
+
+    def _build_batch_panel(self) -> Any:
+        """Build (but don't populate) the left-side notes panel.
+
+        The panel is hidden by default; ``start_batch`` reveals it
+        when batch mode is engaged. Outside batch mode the dialog
+        looks identical to the previous single-note layout.
+        """
+        try:
+            from aqt.qt import (  # type: ignore[import-not-found]
+                QCheckBox,
+                QLabel,
+                QListWidget,
+                QVBoxLayout,
+                QWidget,
+            )
+        except Exception:
+            return QWidget()  # stub path for tests
+
+        panel = QWidget(self)
+        v = QVBoxLayout(panel)
+        try:
+            v.setContentsMargins(0, 0, 0, 0)
+        except Exception:
+            pass
+
+        self._batch_header_label = QLabel("Notes", panel)
+        try:
+            self._batch_header_label.setStyleSheet("font-weight: bold;")
+        except Exception:
+            pass
+        v.addWidget(self._batch_header_label)
+
+        # "Click note to search" toggle. Persisted across dialog opens
+        # via the module-level _REMEMBERED_AUTO_SEARCH flag.
+        self._auto_search_checkbox = QCheckBox("Click note to search", panel)
+        try:
+            self._auto_search_checkbox.setChecked(_REMEMBERED_AUTO_SEARCH)
+            self._auto_search_checkbox.setToolTip(
+                "When checked, clicking a note in the list immediately\n"
+                "searches for images. When unchecked, clicking only\n"
+                "switches the active note (use Search to fetch images)."
+            )
+            self._auto_search_checkbox.toggled.connect(
+                self._on_auto_search_toggled
+            )
+        except Exception:
+            pass
+        v.addWidget(self._auto_search_checkbox)
+
+        self._batch_list_widget = QListWidget(panel)
+        try:
+            self._batch_list_widget.setSelectionMode(
+                QListWidget.SelectionMode.SingleSelection
+            )
+            self._batch_list_widget.itemClicked.connect(
+                self._on_batch_note_clicked
+            )
+        except Exception:
+            pass
+        v.addWidget(self._batch_list_widget)
+
+        # Help label below the list
+        self._batch_help_label = QLabel(
+            "✅ has image · ▶ active · ⏭ skipped",
+            panel,
+        )
+        try:
+            self._batch_help_label.setStyleSheet(
+                "color: #888; font-size: 10px;"
+            )
+        except Exception:
+            pass
+        v.addWidget(self._batch_help_label)
+
+        return panel
 
     def _connect_signals(self) -> None:
         """Wire bus signals to dialog/grid slots."""
@@ -1414,6 +1542,9 @@ class PickerDialog(QDialog):  # type: ignore[misc]
             self._batch_outcomes["chosen"] = (
                 self._batch_outcomes.get("chosen", 0) + 1
             )
+            # Mark the current note in the side panel so the user can
+            # see at a glance that this note has been picked.
+            self._mark_batch_note(self._batch_current_seq, "chosen")
 
             downloader = FullImageDownloader(
                 http=self._http,
@@ -1555,7 +1686,13 @@ class PickerDialog(QDialog):  # type: ignore[misc]
     # Batch mode: reuse a single dialog for many notes
     # ------------------------------------------------------------------
 
-    def start_batch(self, next_provider: Any, prefetch_status: Optional[Any] = None) -> None:
+    def start_batch(
+        self,
+        next_provider: Any,
+        prefetch_status: Optional[Any] = None,
+        notes_meta: Optional[list] = None,
+        job_factory: Optional[Any] = None,
+    ) -> None:
         """Enter batch mode driven by ``next_provider``.
 
         ``next_provider`` is a zero-arg callable returning either a
@@ -1570,6 +1707,13 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         dialog polls it periodically and shows progress in the status
         bar so users can see prefetch coverage in real time.
 
+        ``notes_meta`` is the full list of notes scheduled for this
+        batch, each entry a dict with keys ``query``, ``has_image``,
+        ``nid`` (and optionally ``label``). Populates the left-side
+        notes panel so the user can jump around. ``job_factory`` is a
+        callable ``(seq_idx) -> job_dict`` used when the user clicks a
+        specific note (instead of advancing sequentially).
+
         The dialog enables fire-and-forget full-image downloads:
         double-clicking an image kicks off the download on a
         background pool and immediately advances to the next note,
@@ -1578,6 +1722,17 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         self._batch_mode = True
         self._batch_next_provider = next_provider
         self._batch_prefetch_status = prefetch_status
+        self._batch_notes_meta = list(notes_meta) if notes_meta else []
+        self._batch_job_factory = job_factory
+        self._batch_current_seq = 0  # first job is already loaded by caller
+
+        # Populate and reveal the notes panel.
+        if self._batch_notes_meta:
+            self._populate_batch_list()
+            try:
+                self._batch_panel.setVisible(True)
+            except Exception:
+                pass
 
         # Poll prefetch status every 250ms while the dialog is open so
         # the status bar reflects newly completed prefetches without
@@ -1598,6 +1753,176 @@ class PickerDialog(QDialog):  # type: ignore[misc]
     def batch_outcomes(self) -> dict[str, Any]:
         """Aggregated batch results, populated as the dialog runs."""
         return self._batch_outcomes
+
+    def _populate_batch_list(self) -> None:
+        """Render the notes panel from ``_batch_notes_meta``."""
+        try:
+            from aqt.qt import QListWidgetItem  # type: ignore[import-not-found]
+            from aqt.qt import Qt as _Qt  # type: ignore[import-not-found]
+        except Exception:
+            return
+        try:
+            self._batch_list_widget.clear()
+        except Exception:
+            return
+
+        for idx, meta in enumerate(self._batch_notes_meta):
+            item = QListWidgetItem()
+            try:
+                item.setData(_Qt.ItemDataRole.UserRole, idx)
+            except Exception:
+                pass
+            self._batch_list_widget.addItem(item)
+
+        self._refresh_batch_list_text()
+        try:
+            self._batch_header_label.setText(
+                f"Notes ({len(self._batch_notes_meta)})"
+            )
+        except Exception:
+            pass
+
+    def _refresh_batch_list_text(self) -> None:
+        """Re-render every list item's text based on the current meta."""
+        for idx, meta in enumerate(self._batch_notes_meta):
+            self._update_batch_list_item(idx)
+
+    def _update_batch_list_item(self, idx: int) -> None:
+        """Refresh a single list item's text/style from its meta entry."""
+        if idx < 0 or idx >= len(self._batch_notes_meta):
+            return
+        meta = self._batch_notes_meta[idx]
+        try:
+            item = self._batch_list_widget.item(idx)
+        except Exception:
+            return
+        if item is None:
+            return
+
+        marker = " "
+        if idx == self._batch_current_seq:
+            marker = "▶"
+        elif meta.get("status") == "skipped":
+            marker = "⏭"
+        elif meta.get("has_image") or meta.get("status") == "chosen":
+            marker = "✅"
+
+        label = meta.get("label") or meta.get("query") or "(empty)"
+        try:
+            item.setText(f"{marker} {label}")
+        except Exception:
+            pass
+
+        # Tooltip with full text
+        try:
+            item.setToolTip(label)
+        except Exception:
+            pass
+
+    def _set_batch_current(self, seq_idx: int) -> None:
+        """Mark a new active note in the list (updates markers)."""
+        prev = self._batch_current_seq
+        self._batch_current_seq = seq_idx
+        # Refresh the previous and current rows so markers update
+        self._update_batch_list_item(prev)
+        self._update_batch_list_item(seq_idx)
+        # Select the active row in the list widget
+        try:
+            self._batch_list_widget.setCurrentRow(seq_idx)
+        except Exception:
+            pass
+
+    def _mark_batch_note(self, seq_idx: int, status: str) -> None:
+        """Update meta status for a note (e.g. 'chosen', 'skipped')."""
+        if seq_idx < 0 or seq_idx >= len(self._batch_notes_meta):
+            return
+        meta = self._batch_notes_meta[seq_idx]
+        meta["status"] = status
+        if status == "chosen":
+            meta["has_image"] = True
+        self._update_batch_list_item(seq_idx)
+
+    def _on_batch_note_clicked(self, item: Any) -> None:
+        """Jump to the clicked note in the batch list."""
+        if not self._batch_mode or self._batch_job_factory is None:
+            return
+        try:
+            from aqt.qt import Qt as _Qt  # type: ignore[import-not-found]
+            seq_idx = item.data(_Qt.ItemDataRole.UserRole)
+        except Exception:
+            seq_idx = None
+        if seq_idx is None:
+            try:
+                seq_idx = self._batch_list_widget.row(item)
+            except Exception:
+                return
+        if seq_idx is None or seq_idx == self._batch_current_seq:
+            return
+
+        # Build the job for this note
+        try:
+            job = self._batch_job_factory(seq_idx)
+        except Exception as exc:
+            _log.exception("Job factory raised for seq %s: %s", seq_idx, exc)
+            return
+        if job is None:
+            return
+
+        auto_search = bool(_REMEMBERED_AUTO_SEARCH)
+        try:
+            if self._auto_search_checkbox is not None:
+                auto_search = self._auto_search_checkbox.isChecked()
+        except Exception:
+            pass
+
+        if auto_search:
+            # Full swap: load prefetched results and search
+            self._set_batch_current(seq_idx)
+            self.swap_to_query(
+                editor=job["editor"],
+                query=job["query"],
+                source_field=job["source_field"],
+                target_field=job["target_field"],
+                position=job["position"],
+                prefetched_results=job.get("prefetched_results"),
+                prefetched_errors=job.get("prefetched_errors"),
+                prefetched_translation=job.get("prefetched_translation"),
+            )
+        else:
+            # Lightweight swap: change context only, don't search.
+            # User can edit query and click Search when ready.
+            self._set_batch_current(seq_idx)
+            self._reset_state_for_swap()
+            from dataclasses import replace as _replace
+            self._editor = job["editor"]
+            self._config = _replace(
+                self._config,
+                source_field=job["source_field"],
+                target_field=job["target_field"],
+            )
+            self._query = job["query"]
+            self._effective_query = job["query"]
+            try:
+                self._source_label.setText(
+                    f"<b>{job['source_field']}</b>: <i>{job['query']}</i>"
+                )
+                self.setWindowTitle(
+                    f"Image Picker [{job['position'][0]}/"
+                    f"{job['position'][1]}] — {job['query']}"
+                )
+                self._search_input.blockSignals(True)
+                self._search_input.setText(job["query"])
+                self._search_input.blockSignals(False)
+                self._grid_label.setText(
+                    "Click Search or press Enter to fetch images."
+                )
+            except Exception:
+                pass
+
+    def _on_auto_search_toggled(self, checked: bool) -> None:
+        """Persist the auto-search toggle for the next batch session."""
+        global _REMEMBERED_AUTO_SEARCH
+        _REMEMBERED_AUTO_SEARCH = bool(checked)
 
     def _reset_state_for_swap(self) -> None:
         """Wipe per-note state so the dialog can host a fresh query.
@@ -1779,6 +2104,17 @@ class PickerDialog(QDialog):  # type: ignore[misc]
             self.accept()
             return False
 
+        # Bump the current-seq pointer so the notes list highlights
+        # the newly active row. The notes_meta list is in the same
+        # order as the queue, so seq_idx == current_seq + 1 unless
+        # the user clicked around to jump.
+        next_seq = self._batch_current_seq + 1
+        if next_seq >= len(self._batch_notes_meta):
+            # Defensive: if meta list was shorter than the queue
+            # (shouldn't happen) just stop bumping.
+            next_seq = self._batch_current_seq
+        self._set_batch_current(next_seq)
+
         self.swap_to_query(
             editor=nxt["editor"],
             query=nxt["query"],
@@ -1889,6 +2225,7 @@ class PickerDialog(QDialog):  # type: ignore[misc]
                     self._editor._skip_tag_note()
             except Exception:
                 pass
+            self._mark_batch_note(self._batch_current_seq, "skipped")
             self._advance_batch()
             return
 

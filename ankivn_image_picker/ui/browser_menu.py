@@ -164,6 +164,9 @@ def _on_batch_action(browser: Any) -> None:
         # Pre-compute queries for all notes so we can prefetch.
         config = deps.config
         note_queries: list[tuple[int, Any, str]] = []  # (index, nid, query)
+        # Per-note metadata for the dialog's left-side notes panel.
+        # Same order as note_queries; one dict per kept note.
+        notes_meta: list[dict] = []
         for index, nid in enumerate(nids, start=1):
             try:
                 note = mw.col.get_note(nid)
@@ -184,6 +187,26 @@ def _on_batch_action(browser: Any) -> None:
                 skipped += 1
                 continue
             note_queries.append((index, nid, query))
+
+            # Detect whether the target field already contains an
+            # image. This is a cheap substring check: anything Anki
+            # has rendered will contain an <img> tag.
+            has_image = False
+            try:
+                if batch_target_field in field_names:
+                    tgt_idx = field_names.index(batch_target_field)
+                    tgt_value = note.fields[tgt_idx] or ""
+                    has_image = "<img" in tgt_value.lower()
+            except Exception:
+                has_image = False
+
+            notes_meta.append({
+                "nid": nid,
+                "query": query,
+                "label": query,
+                "has_image": has_image,
+                "status": None,  # set later: "chosen" / "skipped"
+            })
 
         if not note_queries:
             tooltip("No notes with valid source fields found.", parent=browser)
@@ -329,7 +352,6 @@ def _on_batch_action(browser: Any) -> None:
         # Builds the dict the dialog expects each time it asks for the
         # next note. Returns None when the queue is exhausted so the
         # dialog knows to accept().
-        cursor = {"i": 0}
 
         def _build_job_for(seq_idx: int) -> Optional[dict]:
             if seq_idx >= len(note_queries):
@@ -388,8 +410,12 @@ def _on_batch_action(browser: Any) -> None:
             }
 
         def _next_job() -> Optional[dict]:
-            cursor["i"] += 1
-            return _build_job_for(cursor["i"])
+            # Build the job for the seq following whatever the dialog
+            # currently has active. Using the dialog's own pointer
+            # means click-to-jump works without confusing the
+            # sequential advance logic.
+            seq = getattr(dialog, "_batch_current_seq", 0) + 1
+            return _build_job_for(seq)
 
         first_job = _build_job_for(0)
         if first_job is None:
@@ -427,7 +453,12 @@ def _on_batch_action(browser: Any) -> None:
         except Exception:
             pass
 
-        dialog.start_batch(_next_job, prefetch_status=_prefetch_status_snapshot)
+        dialog.start_batch(
+            _next_job,
+            prefetch_status=_prefetch_status_snapshot,
+            notes_meta=notes_meta,
+            job_factory=_build_job_for,
+        )
 
         try:
             dialog.exec()
