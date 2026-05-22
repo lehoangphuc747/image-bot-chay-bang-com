@@ -14,7 +14,7 @@ from ..logging import get_logger
 _log = get_logger("tools_menu")
 
 #: Label displayed under the AnkiVN parent menu.
-_MENU_LABEL = "⚡ Image Picker"
+_MENU_LABEL = "⚡ Image Picker Settings"
 
 
 def _on_tools_menu_clicked() -> None:
