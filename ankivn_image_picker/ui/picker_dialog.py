@@ -306,6 +306,9 @@ _REMEMBERED_TRANSLATE: Optional[bool] = None  # None = use config default
 # Click-note-to-search toggle in batch mode (default off — let the
 # user opt in to auto-search when navigating the notes list)
 _REMEMBERED_AUTO_SEARCH: bool = False
+# Remembered splitter sizes for the batch notes-panel + grid layout.
+# None = first run, fall back to a sensible default.
+_REMEMBERED_SPLITTER_SIZES: Optional[list] = None
 # Persisted sort mode ("mixed" or "grouped")
 _REMEMBERED_SORT_MODE: str = "mixed"
 
@@ -637,7 +640,11 @@ class PickerDialog(QDialog):  # type: ignore[misc]
             # Notes panel narrower by default; grid takes the rest.
             self._main_splitter.setStretchFactor(0, 0)
             self._main_splitter.setStretchFactor(1, 1)
-            self._main_splitter.setSizes([220, 700])
+            # Notes panel ~180px is enough for typical word/phrase
+            # entries while leaving plenty of room for the grid.
+            # Restored from the persisted state in start_batch when
+            # available.
+            self._main_splitter.setSizes([180, 820])
             self._main_splitter.setChildrenCollapsible(True)
         except Exception:
             self._main_splitter = None
@@ -1734,6 +1741,43 @@ class PickerDialog(QDialog):  # type: ignore[misc]
             except Exception:
                 pass
 
+            # Restore the splitter sizes the user picked last time,
+            # otherwise pick a sensible default that leaves the grid
+            # plenty of room.
+            global _REMEMBERED_SPLITTER_SIZES
+            try:
+                if _REMEMBERED_SPLITTER_SIZES is not None:
+                    self._main_splitter.setSizes(_REMEMBERED_SPLITTER_SIZES)
+                else:
+                    self._main_splitter.setSizes([180, 820])
+            except Exception:
+                pass
+
+            # If the dialog is currently smaller than the new
+            # batch-friendly default, grow it. Don't shrink down a
+            # user-resized window though.
+            try:
+                MIN_BATCH_W = 1100
+                MIN_BATCH_H = 700
+                cur_w = self.width()
+                cur_h = self.height()
+                if cur_w < MIN_BATCH_W or cur_h < MIN_BATCH_H:
+                    self.resize(
+                        max(cur_w, MIN_BATCH_W),
+                        max(cur_h, MIN_BATCH_H),
+                    )
+            except Exception:
+                pass
+
+            # Persist splitter sizes whenever the user resizes the
+            # divider so the next batch session restores their layout.
+            try:
+                self._main_splitter.splitterMoved.connect(
+                    self._on_splitter_moved
+                )
+            except Exception:
+                pass
+
         # Poll prefetch status every 250ms while the dialog is open so
         # the status bar reflects newly completed prefetches without
         # requiring a search/thumbnail event to land.
@@ -1923,6 +1967,14 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         """Persist the auto-search toggle for the next batch session."""
         global _REMEMBERED_AUTO_SEARCH
         _REMEMBERED_AUTO_SEARCH = bool(checked)
+
+    def _on_splitter_moved(self, pos: int, index: int) -> None:
+        """Persist splitter sizes after the user drags the divider."""
+        global _REMEMBERED_SPLITTER_SIZES
+        try:
+            _REMEMBERED_SPLITTER_SIZES = list(self._main_splitter.sizes())
+        except Exception:
+            pass
 
     def _reset_state_for_swap(self) -> None:
         """Wipe per-note state so the dialog can host a fresh query.
