@@ -1758,7 +1758,12 @@ class PickerDialog(QDialog):  # type: ignore[misc]
             # user-resized window though.
             try:
                 MIN_BATCH_W = 1100
-                MIN_BATCH_H = 700
+                MIN_BATCH_H = 750
+                # setMinimumSize is more reliable than self.resize()
+                # at this point: Qt enforces the floor whether the
+                # dialog is shown yet or not, and will adjust the
+                # frame on show.
+                self.setMinimumSize(MIN_BATCH_W, MIN_BATCH_H)
                 cur_w = self.width()
                 cur_h = self.height()
                 if cur_w < MIN_BATCH_W or cur_h < MIN_BATCH_H:
@@ -1766,6 +1771,15 @@ class PickerDialog(QDialog):  # type: ignore[misc]
                         max(cur_w, MIN_BATCH_W),
                         max(cur_h, MIN_BATCH_H),
                     )
+                # Defer one more resize once the event loop runs so
+                # restoreGeometry has fully applied. This second call
+                # is a no-op if the user has already grown the
+                # dialog past the minimum.
+                try:
+                    from aqt.qt import QTimer  # type: ignore[import-not-found]
+                    QTimer.singleShot(0, self._enforce_batch_min_size)
+                except Exception:
+                    pass
             except Exception:
                 pass
 
@@ -1973,6 +1987,26 @@ class PickerDialog(QDialog):  # type: ignore[misc]
         global _REMEMBERED_SPLITTER_SIZES
         try:
             _REMEMBERED_SPLITTER_SIZES = list(self._main_splitter.sizes())
+        except Exception:
+            pass
+
+    def _enforce_batch_min_size(self) -> None:
+        """Re-apply the batch min size after the event loop spins.
+
+        Called via QTimer.singleShot(0, ...) so it runs once Qt has
+        finished applying any restoreGeometry from a previous
+        single-note session — those geometries can be smaller than
+        the batch-mode minimum and would otherwise leave the dialog
+        cramped.
+        """
+        try:
+            min_w = self.minimumWidth()
+            min_h = self.minimumHeight()
+            if self.width() < min_w or self.height() < min_h:
+                self.resize(
+                    max(self.width(), min_w),
+                    max(self.height(), min_h),
+                )
         except Exception:
             pass
 
